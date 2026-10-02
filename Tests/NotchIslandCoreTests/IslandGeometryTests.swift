@@ -97,3 +97,58 @@ final class IslandGeometryTests: XCTestCase {
         XCTAssertEqual(IslandMotion.closeDelay, 0.12, accuracy: 1e-9)
     }
 }
+
+/// 펼침 머리줄 항목 이름 라벨(`cpu`·`mem`·`temp`): 펼침 날개 폭에만 반영, 접힘·배치 판정 불변, 카메라 칸 침범 0.
+final class HeadItemLabelTests: XCTestCase {
+    private let base = HeadContentWidths(cpuIcon: 14, cpuValue: 32, memIcon: 15, memValue: 24, glyph: 10, thermIcon: 10, memWord: 24, thermWord: 24, ring: 16, label: 46)
+    private var labeled: HeadContentWidths { var w = base; w.cpuLabel = 22; w.memLabel = 22; w.thermLabel = 29; return w }
+
+    func testLabelsWidenOnlyTheOpenWingsByLabelPlusGapOnTheRightSide() {
+        let o = HeadSpacing.open
+        for side in [MemorySlotFlow.Side.right, .left] {
+            let c0 = HeadSizing.wings(base, side: side, open: false), c1 = HeadSizing.wings(labeled, side: side, open: false)
+            XCTAssertEqual(c0.left, c1.left); XCTAssertEqual(c0.right, c1.right, "접힘 폭은 라벨과 무관")
+            let o0 = HeadSizing.wings(base, side: side, open: true), o1 = HeadSizing.wings(labeled, side: side, open: true)
+            let gap = o.iconValue
+            let wantLeft = (gap + 22) * (side == .left ? 2 : 1), wantRight = (gap + 29) + (side == .right ? gap + 22 : 0)
+            XCTAssertEqual(o1.left - o0.left, wantLeft, accuracy: 1e-9, "왼쪽 날개: cpu\(side == .left ? " + mem" : "") 라벨 몫")
+            XCTAssertEqual(o1.right - o0.right, wantRight, accuracy: 1e-9, "오른쪽 날개: temp\(side == .right ? " + mem" : "") 라벨 몫")
+        }
+    }
+
+    func testMemorySidePlacementIgnoresLabels() {
+        for (ring, label) in [(0, 0), (16, 46), (16, 300)] as [(CGFloat, CGFloat)] {
+            var a = base, b = labeled
+            a.ring = ring; a.label = label; b.ring = ring; b.label = label
+            var fa = MemorySlotFlow(), fb = MemorySlotFlow()
+            for t in 0..<6 { XCTAssertEqual(fa.update(widths: a, now: Double(t)), fb.update(widths: b, now: Double(t)), "라벨이 있어도 배치가 같아야 한다 (ring \(ring), label \(label))") }
+        }
+    }
+
+    /// 라벨이 든 펼침 날개로 만든 레이아웃에서도 카메라 칸 침범 0 · 머리줄이 섬 안 · 펼친 줄이 접힌 줄을 덮는다
+    func testLabeledOpenHeadStaysClearOfCameraAndInsideIsland() {
+        for nw in [185, 250] as [CGFloat] {
+            for side in [MemorySlotFlow.Side.right, .left] {
+                let c = HeadSizing.wings(labeled, side: side, open: false), o = HeadSizing.wings(labeled, side: side, open: true)
+                let cl = IslandLayout(phase: .collapsed, notchWidth: nw, notchHeight: 43, wingsCollapsed: .init(left: c.left, right: c.right), wingsOpen: .init(left: o.left, right: o.right))
+                let ol = IslandLayout(phase: .pinned, notchWidth: nw, notchHeight: 43, wingsCollapsed: .init(left: c.left, right: c.right), wingsOpen: .init(left: o.left, right: o.right))
+                XCTAssertTrue(ol.head.contains(cl.head)); XCTAssertTrue(ol.island.contains(ol.head))
+                XCTAssertEqual(ol.head.minX + ol.wings.left + nw / 2, IslandLayout.panelWidth / 2, accuracy: 0.001, "카메라 칸은 늘 같은 자리")
+                // 왼쪽 날개 내용은 카메라 왼쪽 끝 전에 끝난다, 오른쪽은 카메라 오른쪽 끝 뒤에서 시작한다(날개 폭이 내용 + 양쪽 여백)
+                let s = HeadSpacing.open
+                XCTAssertEqual(o.left, s.wingPad + HeadSizing.leftContent(labeled, side: side, open: true) + s.wingPad, accuracy: 1e-9)
+                XCTAssertEqual(o.right, s.wingPad + HeadSizing.rightContent(labeled, side: side, open: true) + s.wingPad, accuracy: 1e-9)
+                // 폭 보간도 한 진행도: 라벨 포함 펼침 모양에서 끝별 단조·접힘 끝 침범 0
+                var prev: IslandEnds?
+                for i in 0...300 {
+                    let p = 1 - IslandMotion.springProgress(t: Double(i) / 200, response: IslandMotion.closeResponse, damping: IslandMotion.closeDamping)
+                    let e = IslandGeometry.ends(ol.shape, progress: p)
+                    XCTAssertGreaterThanOrEqual(e.left, ol.shape.collapsedLeft - 1e-9); XCTAssertGreaterThanOrEqual(e.right, ol.shape.collapsedRight - 1e-9)
+                    XCTAssertLessThanOrEqual(e.headLeft, e.left + 1e-9); XCTAssertLessThanOrEqual(e.headRight, e.right + 1e-9)
+                    if let q = prev { XCTAssertLessThanOrEqual(e.left, q.left + 1e-9); XCTAssertLessThanOrEqual(e.right, q.right + 1e-9) }
+                    prev = e
+                }
+            }
+        }
+    }
+}

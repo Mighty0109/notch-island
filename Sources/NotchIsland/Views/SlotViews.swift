@@ -2,6 +2,11 @@ import SwiftUI
 import NotchIslandCore
 
 /// 접힘 줄 요소의 글리프·글자 크기(pt). 아이콘·값은 13pt 이상(선명하게). 간격은 `HeadSpacing`(Core) 토큰이 정한다.
+/// 펼침에서 아이콘 뒤에 붙는 항목 이름(터미널 톤 소문자). 접힘에는 없다.
+enum HeadLabel {
+    static let cpu = "cpu", mem = "mem", thermal = "temp"
+}
+
 enum HeadMetrics {
     static let icon: CGFloat = 13
     static let text: CGFloat = 13
@@ -30,6 +35,14 @@ struct SlotView: View {
         }
     }
 
+    private var itemLabel: String {
+        switch kind {
+        case .cpu: return HeadLabel.cpu
+        case .memory: return HeadLabel.mem
+        case .thermal: return HeadLabel.thermal
+        }
+    }
+
     private var iconWidth: CGFloat {
         switch kind {
         case .cpu: return HeadMetrics.cpuIcon
@@ -48,6 +61,7 @@ struct SlotView: View {
                 .font(.system(size: HeadMetrics.icon, weight: .semibold))
                 .foregroundColor(st.on2)
                 .frame(width: iconWidth)
+            WordSlot(model: model, text: itemLabel, lead: sp.iconValue, color: st.on3)         // 펼칠 때만: 아이콘 ▸ 이름 ▸ 값
             switch kind {
             case .cpu:
                 ScrambleText(text: d.value, font: st.font(HeadMetrics.text, .bold), color: st.on, reduceMotion: model.reduceMotion)
@@ -93,10 +107,11 @@ struct WordSlot: View {
     @ObservedObject var model: IslandModel
     let text: String
     var lead: CGFloat = HeadSpacing.collapsed.glyphWord        // 모양↔단어 · 링↔라벨 (5pt)
+    var color: Color = ThemeStyle.matrix.on2
     var body: some View {
         let open = model.phase.isOpen && !text.isEmpty
         Text(text)
-            .font(ThemeStyle.matrix.font(HeadMetrics.word, .semibold)).foregroundColor(ThemeStyle.matrix.on2)
+            .font(ThemeStyle.matrix.font(HeadMetrics.word, .semibold)).foregroundColor(color)
             .lineLimit(1).fixedSize()
             .padding(.leading, lead)
             .opacity(open ? 1 : 0)

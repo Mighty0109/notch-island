@@ -1,6 +1,11 @@
 # Notch Island v0.1
 
 맥북 노치 양옆에 상태 3칸(CPU · 메모리 압박 · 열 상태)을 띄우는 메뉴바 앱. 호버·클릭으로 펼치고, 이벤트가 나면 물방울 알림이 떨어진다.
+
+![Notch Island 데모](docs/demo.gif)
+
+고화질 영상: [docs/demo.mp4](docs/demo.mp4)
+
 모드는 **매트릭스(초록 인광) 하나**, 펼침 카드는 **터미널 IDE 꼴(안 4, 폭 720pt)**: 프롬프트 줄 · 작업 줄 · cpu 점 그래프 · top 5 · cores · llm/ports · 로그 스트림 · Powerline 상태줄. 펼칠 때 코드 비 + 창틀 + 줄 타이핑(막 찍힌 글자는 0.14초 가타카나 → 진짜 글자). 접힘 줄은 시스템 아이콘(SF Symbols)+값(단계 모양)만, 펼치면 같은 자리에 상태 단어가 붙는다. Swift + SwiftUI + AppKit(NSPanel), 독 아이콘 없음(LSUIElement).
 
 ## 빌드 · 실행 · 테스트

@@ -423,7 +423,8 @@ final class IslandModel: ObservableObject {
                                  thermIcon: HeadMetrics.thermIcon,
                                  memWord: mem.checking ? 0 : measureWord(mem.value), thermWord: th.checking ? 0 : measureWord(th.value),
                                  ring: job == nil ? 0 : HeadMetrics.ring,
-                                 label: job.map { measureWord(jobLabelText($0)) } ?? 0)
+                                 label: job.map { measureWord(jobLabelText($0)) } ?? 0,
+                                 cpuLabel: measureWord(HeadLabel.cpu), memLabel: measureWord(HeadLabel.mem), thermLabel: measureWord(HeadLabel.thermal))
     }
 
     /// 날개 폭 갱신 + 메모리 칸 위치: 좌우 내용 폭 차가 더 작은 배치(A: 메모리 오른쪽 / B: 왼쪽)를 고른다. **접힘 폭 기준 고정 판정**(펼침은 따라감),

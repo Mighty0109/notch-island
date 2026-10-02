@@ -52,7 +52,8 @@ public struct MemorySlotFlow: Equatable {
     /// 배치 판정은 **접힘 폭 기준으로 고정** — 펼침은 접힘에서 정해진 배치를 그대로 따른다(펼침 중 재판정 없음, 단어 폭이 판정에 안 섞인다).
     /// 예외는 안전장치뿐: 펼침 기준 오른쪽(A) 내용이 예산을 넘으면 B.
     @discardableResult
-    public mutating func update(widths w: HeadContentWidths, now t: TimeInterval) -> Side {
+    public mutating func update(widths full: HeadContentWidths, now t: TimeInterval) -> Side {
+        let w = full.withoutItemLabels            // 펼침 라벨(cpu·mem·temp)은 배치 판정에 안 섞인다 — 라벨 때문에 메모리 칸이 옮겨가면 안 된다
         let c = HeadSpacing.collapsed, o = HeadSpacing.open
         let rightOpenNoMem = HeadSizing.rightOpenWithoutMemory(w)
         let memOpen = HeadSizing.memory(w, o, open: true)

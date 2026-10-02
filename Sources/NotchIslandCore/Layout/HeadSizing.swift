@@ -29,11 +29,18 @@ public struct HeadContentWidths: Equatable {
     public var memWord: CGFloat, thermWord: CGFloat      // 0 = 단어 없음(확인 중)
     public var ring: CGFloat                              // 0 = 진행 작업 없음
     public var label: CGFloat                             // 링 뒤 작업 라벨 글자 폭
+    /// 펼침에서만 아이콘과 값 사이에 붙는 항목 이름 라벨(`cpu`·`mem`·`temp`)의 글자 폭. 0 = 라벨 없음. 접힘 폭·배치 판정에는 안 들어간다.
+    public var cpuLabel: CGFloat, memLabel: CGFloat, thermLabel: CGFloat
     public init(cpuIcon: CGFloat, cpuValue: CGFloat, memIcon: CGFloat, memValue: CGFloat, glyph: CGFloat, thermIcon: CGFloat,
-                memWord: CGFloat, thermWord: CGFloat, ring: CGFloat, label: CGFloat) {
+                memWord: CGFloat, thermWord: CGFloat, ring: CGFloat, label: CGFloat,
+                cpuLabel: CGFloat = 0, memLabel: CGFloat = 0, thermLabel: CGFloat = 0) {
         self.cpuIcon = cpuIcon; self.cpuValue = cpuValue; self.memIcon = memIcon; self.memValue = memValue; self.glyph = glyph
         self.thermIcon = thermIcon; self.memWord = memWord; self.thermWord = thermWord; self.ring = ring; self.label = label
+        self.cpuLabel = cpuLabel; self.memLabel = memLabel; self.thermLabel = thermLabel
     }
+
+    /// 라벨 폭을 뺀 사본 — 배치 판정(접힘 기준·예산 안전장치)은 라벨이 있어도 달라지지 않게 이걸로 한다.
+    public var withoutItemLabels: HeadContentWidths { var c = self; c.cpuLabel = 0; c.memLabel = 0; c.thermLabel = 0; return c }
 }
 
 /// 날개 폭 계산 — 좌우 대칭이라 큰 쪽 내용 폭에 맞춘다.
@@ -46,14 +53,19 @@ public enum HeadSizing {
         return present.reduce(0, +) + gap * CGFloat(max(0, present.count - 1))
     }
 
-    public static func cpu(_ w: HeadContentWidths, _ s: HeadSpacing) -> CGFloat { w.cpuIcon + s.iconValue + w.cpuValue }
+    /// 펼침에서 아이콘 뒤에 붙는 항목 이름 라벨의 몫(앞 간격 포함, 없으면 0)
+    private static func itemLabel(_ w: CGFloat, _ s: HeadSpacing, open: Bool) -> CGFloat { open && w > 0 ? s.iconValue + w : 0 }
+
+    public static func cpu(_ w: HeadContentWidths, _ s: HeadSpacing, open: Bool = false) -> CGFloat {
+        w.cpuIcon + itemLabel(w.cpuLabel, s, open: open) + s.iconValue + w.cpuValue
+    }
 
     public static func memory(_ w: HeadContentWidths, _ s: HeadSpacing, open: Bool) -> CGFloat {
-        w.memIcon + s.iconValue + w.memValue + s.valueGlyph + w.glyph + (open && w.memWord > 0 ? s.glyphWord + w.memWord : 0)
+        w.memIcon + itemLabel(w.memLabel, s, open: open) + s.iconValue + w.memValue + s.valueGlyph + w.glyph + (open && w.memWord > 0 ? s.glyphWord + w.memWord : 0)
     }
 
     public static func thermal(_ w: HeadContentWidths, _ s: HeadSpacing, open: Bool) -> CGFloat {
-        w.thermIcon + s.iconValue + w.glyph + (open && w.thermWord > 0 ? s.glyphWord + w.thermWord : 0)
+        w.thermIcon + itemLabel(w.thermLabel, s, open: open) + s.iconValue + w.glyph + (open && w.thermWord > 0 ? s.glyphWord + w.thermWord : 0)
     }
 
     public static func ring(_ w: HeadContentWidths, _ s: HeadSpacing, open: Bool) -> CGFloat {
@@ -62,7 +74,7 @@ public enum HeadSizing {
 
     public static func leftContent(_ w: HeadContentWidths, side: MemorySlotFlow.Side, open: Bool) -> CGFloat {
         let s = HeadSpacing.at(open: open)
-        return joined([cpu(w, s), side == .left ? memory(w, s, open: open) : 0], gap: s.slotGap)
+        return joined([cpu(w, s, open: open), side == .left ? memory(w, s, open: open) : 0], gap: s.slotGap)
     }
 
     /// 오른쪽 내용: [메모리] · 열 · 링. 열↔링 간격만 `ringGap`(더 넓음), 나머지 칸 사이는 `slotGap`.
