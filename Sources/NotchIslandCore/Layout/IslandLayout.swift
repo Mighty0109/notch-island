@@ -51,6 +51,13 @@ public struct IslandLayout: Equatable {
     }
     public var extents: (left: CGFloat, right: CGFloat) { phase.isOpen ? openExtents : collapsedExtents }
 
+    /// 섬 외곽의 접힘·펼침 끝값(애니메이션 입력). 펼침 머리줄 뻗음 = 카메라 반폭 + 펼침 날개.
+    public var shape: IslandShape {
+        IslandShape(collapsedLeft: Double(collapsedExtents.left), collapsedRight: Double(collapsedExtents.right), collapsedHeight: Double(notchHeight),
+                    openLeft: Double(openExtents.left), openRight: Double(openExtents.right), openHeight: Double(notchHeight + cardHeight),
+                    headOpenLeft: Double(halfNotch + wingsOpen.left), headOpenRight: Double(halfNotch + wingsOpen.right))
+    }
+
     /// 접힌 섬 폭 — 노치 + 각자 날개
     public var collapsedWidth: CGFloat { notchWidth + wingsCollapsed.left + wingsCollapsed.right }
     public var openHeadWidth: CGFloat { notchWidth + wingsOpen.left + wingsOpen.right }

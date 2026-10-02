@@ -8,9 +8,7 @@ struct IslandRootView: View {
 
     var body: some View {
         let layout = model.layout
-        let island = layout.island
         let isOpen = model.phase.isOpen
-        let radius: CGFloat = isOpen ? 28 : 12
         let nh = layout.notchHeight
 
         ZStack(alignment: .topLeading) {
@@ -18,34 +16,26 @@ struct IslandRootView: View {
                 DropLayer(model: model, layout: layout)
             }
 
-            ZStack(alignment: .top) {
-                notchShape(radius).fill(Color.black)
-                    .shadow(color: .black.opacity(isOpen ? 0.32 : 0), radius: 18, x: 0, y: 12)
-
-                if model.cardMounted {
-                    // 카드는 카메라(패널 가운데) 중심 720pt 고정 폭 — 머리줄이 더 넓어 섬이 양옆으로 더 뻗어도 카드는 그 안 가운데에 선다.
-                    // 왼쪽 여백은 섬의 왼쪽 뻗음에 맞춰 같은 곡선으로 움직이므로 펼침·닫힘 중에도 카드가 제자리(카메라 기준)에 있다.
-                    CardView(model: model)
-                        .padding(.top, nh)
-                        .frame(width: IslandLayout.cardWidth, height: island.height, alignment: .top)
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.click(.card) }
-                        .opacity(cardVisible ? 1 : 0)
-                        .animation(model.reduceMotion ? nil : (cardVisible ? .easeOut(duration: 0.12) : .easeIn(duration: 0.09)), value: cardVisible)
-                        .allowsHitTesting(isOpen)
-                        .accessibilityHidden(!isOpen)
-                        .padding(.leading, layout.extents.left - IslandLayout.cardWidth / 2)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                }
-
-                HeadStrip(model: model)
-                    .frame(width: layout.head.width, height: nh)
-                    .padding(.leading, layout.headXInIsland)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            // 섬 외곽: 카메라 기준 왼쪽·오른쪽 뻗음을 각각 애니메이션하고, 프레임마다 노치 하드웨어 폭·높이 미만을 잘라낸다
-            .modifier(IslandFrame(left: layout.extents.left, right: layout.extents.right, h: island.height, radius: radius,
-                                  minHalf: layout.notchWidth / 2, minH: nh))
+            // 섬 외곽: 접힘 ↔ 펼침 끝값을 하나의 진행도로 단조 보간(왼쪽·오른쪽·아래 끝이 접힘 끝 안쪽으로 못 들어옴), 머리줄·카드는 그 끝에서 위치를 정한다
+            IslandSurface(data: IslandAnim(shape: layout.shape, progress: isOpen ? 1 : 0),
+                          card: { _ in
+                              if model.cardMounted {
+                                  // 카드는 카메라(패널 가운데) 중심 720pt 고정 폭. 닫을 땐 섬이 줄기 전에 먼저 페이드 아웃(0.12초)한다.
+                                  CardView(model: model)
+                                      .frame(width: IslandLayout.cardWidth, alignment: .top)
+                                      .contentShape(Rectangle())
+                                      .onTapGesture { model.click(.card) }
+                                      .opacity(cardVisible ? 1 : 0)
+                                      .animation(model.reduceMotion ? nil : (cardVisible ? .easeOut(duration: 0.12) : .easeIn(duration: 0.12)), value: cardVisible)
+                                      .allowsHitTesting(isOpen)
+                                      .accessibilityHidden(!isOpen)
+                              }
+                          },
+                          head: { e in
+                              HeadStrip(model: model, wingLeft: CGFloat(e.headLeft) - layout.notchWidth / 2,
+                                        wingRight: CGFloat(e.headRight) - layout.notchWidth / 2, notchWidth: layout.notchWidth)
+                          },
+                          notchHeight: nh)
             .frame(width: IslandLayout.panelWidth, alignment: .top)       // 카메라(패널 가운데) 기준 배치
 
             PillText(model: model, layout: layout)
@@ -58,26 +48,48 @@ struct IslandRootView: View {
     }
 }
 
-/// 섬 외곽 애니메이션: 카메라(패널 가운데) 기준 왼쪽·오른쪽 뻗음 + 높이 + 모서리. 좌우가 각자 움직여 한쪽만 길어질 수 있고,
-/// 프레임마다 노치 하드웨어 폭·높이 미만으로는 못 줄어든다(하드웨어 카메라가 드러나지 않게).
-struct IslandFrame: ViewModifier, Animatable {
-    var left: CGFloat
-    var right: CGFloat
-    var h: CGFloat
-    var radius: CGFloat
-    let minHalf: CGFloat
-    let minH: CGFloat
-    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
-        get { AnimatablePair(AnimatablePair(left, right), AnimatablePair(h, radius)) }
-        set { left = newValue.first.first; right = newValue.first.second; h = newValue.second.first; radius = newValue.second.second }
-    }
-    func body(content: Content) -> some View {
-        let l = IslandMotion.clamped(left, min: minHalf), r = IslandMotion.clamped(right, min: minHalf)
-        if IslandModel.traceOn { print(String(format: "FRAME %.4f %.2f %.2f L%.2f R%.2f", ProcessInfo.processInfo.systemUptime, l + r, h, l, r)); fflush(stdout) }
-        return content
-            .frame(width: l + r, height: IslandMotion.clamped(h, min: minH), alignment: .top)
-            .clipShape(notchShape(radius))
-            .offset(x: (r - l) / 2)
+/// 애니메이션 벡터: [진행도, 섬 모양 끝값 8개]. 진행도(0 접힘 ↔ 1 펼침)만 스프링으로 움직이고 나머지는 보통 상수 — 카드 높이·날개 폭이 펼침 중에 바뀌어도 같은 곡선으로 따라간다.
+struct IslandAnim: VectorArithmetic {
+    var v: [Double]
+    init(v: [Double]) { self.v = v }
+    init(shape: IslandShape, progress: Double) { v = [progress] + shape.packed }
+    var progress: Double { v[0] }
+    var shape: IslandShape { IslandShape(packed: Array(v[1...])) }
+    static var zero: IslandAnim { IslandAnim(v: [Double](repeating: 0, count: 9)) }
+    static func + (a: IslandAnim, b: IslandAnim) -> IslandAnim { IslandAnim(v: zip(a.v, b.v).map(+)) }
+    static func - (a: IslandAnim, b: IslandAnim) -> IslandAnim { IslandAnim(v: zip(a.v, b.v).map(-)) }
+    mutating func scale(by rhs: Double) { v = v.map { $0 * rhs } }
+    var magnitudeSquared: Double { v.reduce(0) { $0 + $1 * $1 } }
+}
+
+/// 섬 본체: 검은 바탕 + 카드 + 머리줄을 한 좌표계에 둔다. 외곽(왼쪽·오른쪽·아래 끝)은 `IslandGeometry` 가 진행도 하나로 정하고,
+/// 머리줄은 카메라에 붙은 채 그 끝 안에서 위치가 정해지므로 닫히는 내내 잘리지 않는다.
+struct IslandSurface<Card: View, Head: View>: View, Animatable {
+    var data: IslandAnim
+    @ViewBuilder let card: (IslandEnds) -> Card
+    @ViewBuilder let head: (IslandEnds) -> Head
+    let notchHeight: CGFloat
+    var animatableData: IslandAnim { get { data } set { data = newValue } }
+
+    var body: some View {
+        let e = IslandGeometry.ends(data.shape, progress: data.progress)
+        if IslandModel.traceOn {
+            print(String(format: "FRAME %.4f %.2f %.2f L%.2f R%.2f HL%.2f HR%.2f P%.4f", ProcessInfo.processInfo.systemUptime,
+                         e.left + e.right, e.height, e.left, e.right, e.headLeft, e.headRight, data.progress)); fflush(stdout)
+        }
+        return ZStack(alignment: .topLeading) {
+            notchShape(CGFloat(e.radius)).fill(Color.black)
+            card(e)
+                .frame(width: IslandLayout.cardWidth, alignment: .top)
+                .padding(.top, notchHeight)
+                .offset(x: CGFloat(e.left) - IslandLayout.cardWidth / 2)
+            head(e)
+                .frame(width: CGFloat(e.headLeft + e.headRight), height: notchHeight, alignment: .topLeading)
+                .offset(x: CGFloat(e.left - e.headLeft))
+        }
+        .frame(width: CGFloat(e.left + e.right), height: CGFloat(e.height), alignment: .topLeading)
+        .clipShape(notchShape(CGFloat(e.radius)))
+        .offset(x: CGFloat(e.right - e.left) / 2)
     }
 }
 
@@ -86,6 +98,9 @@ struct IslandFrame: ViewModifier, Animatable {
 /// 단어가 페이드인한다(섬 펼침 애니메이션과 한 덩어리). 오른쪽이 넘치면 메모리 칸이 왼쪽 CPU 옆으로 간다.
 struct HeadStrip: View {
     @ObservedObject var model: IslandModel
+    let wingLeft: CGFloat          // 날개 폭 — 섬 끝과 같은 진행도로 보간된 값(IslandGeometry)
+    let wingRight: CGFloat
+    let notchWidth: CGFloat
 
     private static func traceWing(_ w: CGFloat) {
         guard IslandModel.traceOn else { return }
@@ -93,8 +108,7 @@ struct HeadStrip: View {
     }
 
     var body: some View {
-        let l = model.layout
-        let _ = Self.traceWing(l.wings.left)
+        let _ = Self.traceWing(wingLeft)
         let mem = model.display(.memory), th = model.display(.thermal)
         let onRight = model.memorySide == .right
         let sp = HeadSpacing.at(open: model.phase.isOpen)
@@ -103,9 +117,9 @@ struct HeadStrip: View {
                 SlotView(model: model, kind: .cpu)
                 if !onRight { MemoryGroup(model: model).transition(.opacity) }
             }
-            .padding(.leading, sp.wingPad).frame(width: l.wings.left, alignment: .leading)
+            .padding(.leading, sp.wingPad).frame(width: wingLeft, alignment: .leading)
 
-            Color.clear.frame(width: l.notchWidth)         // 카메라 영역: 아무것도 그리지 않는다
+            Color.clear.frame(width: notchWidth)         // 카메라 영역: 아무것도 그리지 않는다
 
             HStack(spacing: sp.slotGap) {
                 if onRight { MemoryGroup(model: model).transition(.opacity) }
@@ -121,7 +135,7 @@ struct HeadStrip: View {
                     .padding(.leading, sp.ringGap - sp.slotGap)        // 온도 ↔ 링 간격만 더 넓다
                 }
             }
-            .padding(.leading, sp.wingPad).frame(width: l.wings.right, alignment: .leading)
+            .padding(.leading, sp.wingPad).frame(width: wingRight, alignment: .leading)
         }
         .animation(model.reduceMotion ? nil : .easeOut(duration: 0.2), value: onRight)
         .contentShape(Rectangle())

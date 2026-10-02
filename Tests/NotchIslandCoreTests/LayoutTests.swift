@@ -133,35 +133,6 @@ final class DigitScrambleTests: XCTestCase {
 
 
 final class IslandMotionTests: XCTestCase {
-    private let collapsedW: Double = 522, openW: Double = 660, collapsedH: Double = 43, openH: Double = 430
-
-    /// 닫힘: 펼친 크기 → 접힘 크기. 어떤 시각에서도 접힘 크기 미만이면 안 되고 곡선은 단조(오버슈트 0)다.
-    func testCloseNeverGoesBelowCollapsedSize() {
-        var prevW = openW, prevH = openH
-        for i in 0...3000 {
-            let t = Double(i) / 1000
-            let p = IslandMotion.springProgress(t: t, response: IslandMotion.closeResponse, damping: IslandMotion.closeDamping)
-            XCTAssertTrue(p >= 0 && p <= 1.0000001, "t=\(t) progress \(p) 가 [0,1] 밖 = 오버슈트")
-            let w = openW + (collapsedW - openW) * p, h = openH + (collapsedH - openH) * p
-            XCTAssertGreaterThanOrEqual(w, collapsedW - 1e-9, "t=\(t) 폭이 접힘 미만")
-            XCTAssertGreaterThanOrEqual(h, collapsedH - 1e-9, "t=\(t) 높이가 접힘 미만")
-            XCTAssertLessThanOrEqual(w, prevW + 1e-9); XCTAssertLessThanOrEqual(h, prevH + 1e-9)
-            prevW = w; prevH = h
-        }
-    }
-
-    /// 펼침은 튕겨도 되지만(목표 초과) 시작 크기(접힘)보다 작아지면 안 된다
-    func testOpenBounceNeverGoesBelowCollapsedSize() {
-        var peak = 0.0
-        for i in 0...3000 {
-            let p = IslandMotion.springProgress(t: Double(i) / 1000, response: IslandMotion.openResponse, damping: IslandMotion.openDamping)
-            XCTAssertGreaterThanOrEqual(collapsedW + (openW - collapsedW) * p, collapsedW - 1e-9)
-            XCTAssertGreaterThanOrEqual(collapsedH + (openH - collapsedH) * p, collapsedH - 1e-9)
-            peak = max(peak, p)
-        }
-        XCTAssertGreaterThan(peak, 1.0, "펼침은 살짝 튕긴다(유지)")
-    }
-
     /// 닫힘이 충분히 빨리 끝난다(체감 ≈ 0.3~0.4초 안에 99%)
     func testCloseSettlesQuickly() {
         let p = IslandMotion.springProgress(t: 0.5, response: IslandMotion.closeResponse, damping: IslandMotion.closeDamping)

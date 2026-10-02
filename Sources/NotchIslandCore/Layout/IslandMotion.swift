@@ -6,6 +6,8 @@ import CoreGraphics
 public enum IslandMotion {
     public static let closeResponse = 0.30
     public static let closeDamping = 1.0          // 임계 감쇠: 오버슈트 없음
+    /// 닫을 때 카드 본문이 먼저 페이드 아웃하는 시간 — 그 뒤에 외곽이 줄기 시작한다(내용이 사각형에 잘려 나가지 않게)
+    public static let closeDelay = 0.12
     public static let openResponse = 0.46
     public static let openDamping = 0.78
 

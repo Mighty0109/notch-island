@@ -159,8 +159,9 @@ final class IslandModel: ObservableObject {
                        : .spring(response: IslandMotion.closeResponse, dampingFraction: IslandMotion.closeDamping)
     }
 
-    func setAnimated(opening: Bool = false, _ body: () -> Void) {
-        if let a = animation(opening: opening) { withAnimation(a, body) } else { body() }
+    /// `delay`: 닫힐 때 카드가 먼저 사라질 시간(`IslandMotion.closeDelay`) — 외곽이 줄기 시작하는 시점만 늦춘다
+    func setAnimated(opening: Bool = false, delay: Double = 0, _ body: () -> Void) {
+        if let a = animation(opening: opening) { withAnimation(delay > 0 ? a.delay(delay) : a, body) } else { body() }
     }
 
     /// 카드 높이가 바뀌면(알림 줄·진행 줄 등) 섬 크기를 같은 계열의 애니메이션으로 — 한쪽만 튀지 않게
@@ -199,12 +200,12 @@ final class IslandModel: ObservableObject {
         } else if from.isOpen {
             unmountToken += 1
             let t = unmountToken
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 + IslandMotion.closeDelay) { [weak self] in
                 guard let self, self.unmountToken == t, !self.phase.isOpen else { return }
                 self.cardMounted = false
             }
         }
-        setAnimated(opening: to.isOpen) { self.phase = to }
+        setAnimated(opening: to.isOpen, delay: from.isOpen && !to.isOpen ? IslandMotion.closeDelay : 0) { self.phase = to }
         refreshMemorySide()          // 접힘/펼침 폭이 다르니 균형 판정도 다시
         trace("phase \(from) → \(to)")
         collector.setExpanded(to.isOpen)
