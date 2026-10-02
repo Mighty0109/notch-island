@@ -32,8 +32,8 @@ struct IslandRootView: View {
                               }
                           },
                           head: { e in
-                              HeadStrip(model: model, wingLeft: CGFloat(e.headLeft) - layout.notchWidth / 2,
-                                        wingRight: CGFloat(e.headRight) - layout.notchWidth / 2, notchWidth: layout.notchWidth)
+                              HeadStrip(model: model, wingLeft: CGFloat(e.left) - layout.notchWidth / 2,
+                                        wingRight: CGFloat(e.right) - layout.notchWidth / 2, notchWidth: layout.notchWidth)
                           },
                           notchHeight: nh)
             .frame(width: IslandLayout.panelWidth, alignment: .top)       // 카메라(패널 가운데) 기준 배치
@@ -83,9 +83,9 @@ struct IslandSurface<Card: View, Head: View>: View, Animatable {
                 .frame(width: IslandLayout.cardWidth, alignment: .top)
                 .padding(.top, notchHeight)
                 .offset(x: CGFloat(e.left) - IslandLayout.cardWidth / 2)
+            // 머리줄 줄 자리 = 섬 가로 전체. 왼쪽 날개 내용은 섬 왼쪽 바깥 끝(+여백), 오른쪽은 오른쪽 바깥 끝(−여백)에 붙고 남는 자리는 카메라 쪽에 모인다.
             head(e)
-                .frame(width: CGFloat(e.headLeft + e.headRight), height: notchHeight, alignment: .topLeading)
-                .offset(x: CGFloat(e.left - e.headLeft))
+                .frame(width: CGFloat(e.left + e.right), height: notchHeight, alignment: .topLeading)
         }
         .frame(width: CGFloat(e.left + e.right), height: CGFloat(e.height), alignment: .topLeading)
         .clipShape(notchShape(CGFloat(e.radius)))
@@ -98,7 +98,7 @@ struct IslandSurface<Card: View, Head: View>: View, Animatable {
 /// 단어가 페이드인한다(섬 펼침 애니메이션과 한 덩어리). 오른쪽이 넘치면 메모리 칸이 왼쪽 CPU 옆으로 간다.
 struct HeadStrip: View {
     @ObservedObject var model: IslandModel
-    let wingLeft: CGFloat          // 날개 폭 — 섬 끝과 같은 진행도로 보간된 값(IslandGeometry)
+    let wingLeft: CGFloat          // 날개 폭 = 섬 끝 − 카메라 반폭 (IslandGeometry 진행도 하나로 보간된 값)
     let wingRight: CGFloat
     let notchWidth: CGFloat
 
@@ -117,6 +117,7 @@ struct HeadStrip: View {
                 SlotView(model: model, kind: .cpu)
                 if !onRight { MemoryGroup(model: model).transition(.opacity) }
             }
+            .background(GeometryReader { g in Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(leftMinX: g.frame(in: .named("head")).minX, rightMaxX: nil)) })
             .padding(.leading, sp.wingPad).frame(width: wingLeft, alignment: .leading)
 
             Color.clear.frame(width: notchWidth)         // 카메라 영역: 아무것도 그리지 않는다
@@ -135,8 +136,10 @@ struct HeadStrip: View {
                     .padding(.leading, sp.ringGap - sp.slotGap)        // 온도 ↔ 링 간격만 더 넓다
                 }
             }
-            .padding(.leading, sp.wingPad).frame(width: wingRight, alignment: .leading)
+            .background(GeometryReader { g in Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(leftMinX: nil, rightMaxX: g.frame(in: .named("head")).maxX)) })
+            .padding(.trailing, sp.wingPad).frame(width: wingRight, alignment: .trailing)
         }
+        .coordinateSpace(name: "head")
         .animation(model.reduceMotion ? nil : .easeOut(duration: 0.2), value: onRight)
         .contentShape(Rectangle())
         .onTapGesture { model.click(.head) }
@@ -144,6 +147,17 @@ struct HeadStrip: View {
         .accessibilityLabel("Notch Island 상태 모니터")
         .accessibilityHint("누르면 펼침을 고정하고, 다시 누르면 접습니다")
         .accessibilityValue(mem.spoken)
+    }
+}
+
+/// 머리줄 안 좌우 날개 내용의 바깥 끝(머리줄 좌표) — 규칙 "왼쪽 첫 칸 = 섬 왼끝 + 여백, 오른쪽 끝 = 섬 오른끝 − 여백"을 테스트가 잰다.
+struct HeadEdges: Equatable { var leftMinX: CGFloat?; var rightMaxX: CGFloat? }
+struct HeadEdgesKey: PreferenceKey {
+    static var defaultValue = HeadEdges()
+    static func reduce(value: inout HeadEdges, nextValue: () -> HeadEdges) {
+        let n = nextValue()
+        if let l = n.leftMinX { value.leftMinX = l }
+        if let r = n.rightMaxX { value.rightMaxX = r }
     }
 }
 
