@@ -131,7 +131,7 @@ struct HeadStrip: View {
                 if let job = model.job {
                     HStack(spacing: 0) {
                         JobPod(model: model, job: job)
-                        WordSlot(model: model, text: model.jobLabelText(job))
+                        WordSlot(model: model, text: model.jobLabelText(job), color: job.low ? TermStyle.warn : ThemeStyle.matrix.on2)
                     }
                     .padding(.leading, sp.ringGap - sp.slotGap)        // 온도 ↔ 링 간격만 더 넓다
                 }

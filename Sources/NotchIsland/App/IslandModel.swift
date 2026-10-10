@@ -19,6 +19,17 @@ struct JobInfo: Equatable {
     var label: String
     var short: String
     var percent: Int
+    var tag: String = "charge"       // 펼침 카드 줄 머리 태그 — [charge] / [battery]
+    var low: Bool = false            // 저전력 경고(충전 중 아님 + 20% 이하) — 링·단어·퍼센트를 경고색으로
+
+    /// 배터리 값 → 진행 작업 자리. 값이 없으면(배터리 없는 맥) nil. 충전 중이 아니어도 항상 만든다.
+    static let lowBatteryPercent = 20
+    static func battery(_ b: BatteryInfo?) -> JobInfo? {
+        guard let b else { return nil }
+        if b.isCharging, b.onACPower { return JobInfo(label: "배터리 충전", short: "충전", percent: b.percent) }
+        return JobInfo(label: b.onACPower ? "배터리 · 전원" : "배터리", short: "배터리", percent: b.percent,
+                       tag: "battery", low: b.percent <= lowBatteryPercent)
+    }
 }
 
 
@@ -254,8 +265,8 @@ final class IslandModel: ObservableObject {
             new = nil
         } else if forcedCharging {
             new = JobInfo(label: "배터리 충전 (디버그 표시)", short: debugLongJob ? "ComfyUI 렌더링 · 남은 시간 약 12분" : "충전", percent: 62)
-        } else if let b = s.battery.value, b.isCharging, b.onACPower {
-            new = JobInfo(label: "배터리 충전", short: "충전", percent: b.percent)
+        } else {
+            new = JobInfo.battery(s.battery.value)
         }
         if new != job { setAnimated { self.job = new } }
     }

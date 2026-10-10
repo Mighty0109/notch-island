@@ -99,6 +99,7 @@ struct RevealMask: ViewModifier {
 struct CellBar: View {
     let on: Int
     let total: Int
+    var litColor: Color = TermStyle.acc
     static let cellW: CGFloat = 6.2
     static let cellH: CGFloat = 9
     var width: CGFloat { CGFloat(total) * Self.cellW + CGFloat(max(0, total - 1)) }
@@ -107,7 +108,7 @@ struct CellBar: View {
         Canvas { ctx, _ in
             for i in 0..<total {
                 let r = CGRect(x: CGFloat(i) * (Self.cellW + 1), y: 0, width: Self.cellW, height: Self.cellH)
-                ctx.fill(Path(r), with: .color(i < on ? TermStyle.acc : TermStyle.dim))
+                ctx.fill(Path(r), with: .color(i < on ? litColor : TermStyle.dim))
             }
         }
         .frame(width: width, height: Self.cellH)
@@ -161,6 +162,7 @@ struct DotGraph: View {
 /// 10칸 점선 진행 링: 한 칸 = 10%. 켜진 칸은 위에서부터 시계 방향.
 struct DashRing: View {
     let percent: Int
+    var litColor: Color = TermStyle.acc
     /// 켜지는 칸 수(0...10)
     static func litCount(percent: Int) -> Int { min(10, max(0, Int((Double(percent) / 10).rounded()))) }
 
@@ -176,7 +178,7 @@ struct DashRing: View {
                     let pt = CGPoint(x: (8 + 6.6 * cos(a)) * s, y: (8 + 6.6 * sin(a)) * s)
                     if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
                 }
-                ctx.stroke(p, with: .color(i < lit ? TermStyle.acc : TermStyle.dim), style: StrokeStyle(lineWidth: 2.3 * s, lineCap: .butt, lineJoin: .round))
+                ctx.stroke(p, with: .color(i < lit ? litColor : TermStyle.dim), style: StrokeStyle(lineWidth: 2.3 * s, lineCap: .butt, lineJoin: .round))
             }
         }
     }

@@ -142,7 +142,7 @@ struct PromptRow: View {
     }
 }
 
-// MARK: - 작업 줄 ([charge] ▮▮▮▮ 62% · 배터리 충전 / [idle])
+// MARK: - 작업 줄 ([charge]|[battery] ▮▮▮▮ 62% · 배터리 충전 / [idle])
 
 struct JobLine: View {
     @ObservedObject var model: IslandModel
@@ -152,12 +152,13 @@ struct JobLine: View {
     var body: some View {
         HStack(spacing: 10) {
             if let job = model.job {
-                let barX = 8 * Self.cellW + 10
-                let bar = CellBar(on: Int((Double(job.percent) / 100 * 36).rounded()), total: 36)
-                TypedLine(segs: [TermSeg("[charge]", TermStyle.kw)], elapsed: e)
+                let tag = "[\(job.tag)]"
+                let barX = Double(tag.count) * Self.cellW + 10        // 태그 폭(charge 8자 / battery 9자)에 맞춰 바 위치가 따라간다
+                let bar = CellBar(on: Int((Double(job.percent) / 100 * 36).rounded()), total: 36, litColor: job.low ? TermStyle.warn : TermStyle.acc)
+                TypedLine(segs: [TermSeg(tag, TermStyle.kw)], elapsed: e)
                 bar.modifier(RevealMask(elapsed: e, xStart: CGFloat(barX)))
                 let after = e - (barX + Double(bar.width) + 10) / (RevealTiming.cardCharsPerSecond * Self.cellW)
-                TypedLine(segs: [TermSeg(String(format: "%3d%%", job.percent), TermStyle.acc, .bold)], elapsed: after)
+                TypedLine(segs: [TermSeg(String(format: "%3d%%", job.percent), job.low ? TermStyle.warn : TermStyle.acc, .bold)], elapsed: after)
                 TypedLine(segs: [TermSeg("· " + job.label, TermStyle.fg2)], elapsed: after - 0.015)
             } else {
                 TypedLine(segs: [TermSeg("[idle]  ", TermStyle.kw), TermSeg("진행 중인 작업 없음", TermStyle.fg2)], elapsed: e)

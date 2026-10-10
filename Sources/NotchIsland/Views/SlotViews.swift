@@ -85,14 +85,14 @@ struct SlotView: View {
     }
 }
 
-/// 진행 작업 자리(라이브 액티비티형): 라벨 없이 작은 10칸 점선 링만(한 칸 = 10%). 퍼센트는 툴팁과 펼침 라벨·카드에 있다. v0.1 은 충전 중 1종만 실데이터.
+/// 진행 작업 자리(라이브 액티비티형): 라벨 없이 작은 10칸 점선 링만(한 칸 = 10%). 퍼센트는 툴팁과 펼침 라벨·카드에 있다. 배터리가 있으면 충전 여부와 무관하게 항상 뜬다(저전력은 경고색).
 /// 안 4 시안대로 정적이다 — 예전의 0.5초 계단 궤도 점(상시 TimelineView)은 뺐다.
 struct JobPod: View {
     @ObservedObject var model: IslandModel
     let job: JobInfo
 
     var body: some View {
-        DashRing(percent: job.percent)
+        DashRing(percent: job.percent, litColor: job.low ? TermStyle.warn : TermStyle.acc)
         .frame(width: HeadMetrics.ring, height: HeadMetrics.ring)
         .help("\(job.short) \(job.percent)%")
         .accessibilityElement(children: .ignore)
