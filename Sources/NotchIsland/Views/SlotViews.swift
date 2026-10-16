@@ -4,7 +4,7 @@ import NotchIslandCore
 /// 접힘 줄 요소의 글리프·글자 크기(pt). 아이콘·값은 13pt 이상(선명하게). 간격은 `HeadSpacing`(Core) 토큰이 정한다.
 /// 펼침에서 아이콘 뒤에 붙는 항목 이름(터미널 톤 소문자). 접힘에는 없다.
 enum HeadLabel {
-    static let cpu = "cpu", mem = "mem", thermal = "temp"
+    static let cpu = "cpu", mem = "mem"
 }
 
 enum HeadMetrics {
@@ -39,7 +39,7 @@ struct SlotView: View {
         switch kind {
         case .cpu: return HeadLabel.cpu
         case .memory: return HeadLabel.mem
-        case .thermal: return HeadLabel.thermal
+        case .thermal: return ""
         }
     }
 

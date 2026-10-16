@@ -130,7 +130,7 @@ final class HeadDegreeTests: XCTestCase {
         print("HEAD degree=\(model.display(.thermal).value) open=\(open) tight=\(tight) wings=\(left)/\(right) camera pixels clear")
     }
 
-    /// 실제 머리줄의 열 칸을 독립적인 Text 견본과 비교한다. 모델의 display/thermalWord 와
+    /// 실제 머리줄의 열 칸을 항목 이름이 없는 독립적인 Text 견본과 비교한다. 모델의 display/thermalWord 와
     /// WordSlot/SlotView 를 견본에 쓰지 않아 문구 누락·오표시·접힘의 °C 잔상을 검출한다.
     private func assertThermalPixels(_ actual: CGImage, model: IslandModel, expectedWord: String,
                                      expectedGlyph: String, expectedColor: Color,
@@ -140,7 +140,7 @@ final class HeadDegreeTests: XCTestCase {
         let st = ThemeStyle.matrix
         let wordWidth = model.measureWord(expectedWord.hasSuffix("°") ? "100°" : expectedWord)
         let thermalWidth = HeadMetrics.thermIcon + sp.iconValue + HeadMetrics.glyph
-            + (open ? sp.iconValue + model.measureWord("temp") + sp.glyphWord + wordWidth : 0)
+            + (open ? sp.glyphWord + wordWidth : 0)
         let jobWidth = model.job.map {
             sp.ringGap + HeadMetrics.ring + (open ? sp.glyphWord + model.measureWord(model.jobLabelText($0)) : 0)
         } ?? 0
@@ -150,11 +150,6 @@ final class HeadDegreeTests: XCTestCase {
             Image(systemName: "thermometer.medium")
                 .font(.system(size: HeadMetrics.icon, weight: .semibold)).foregroundColor(st.on2)
                 .frame(width: HeadMetrics.thermIcon)
-            if open {
-                Text("temp").font(st.font(HeadMetrics.word, .semibold)).foregroundColor(st.on3)
-                    .fixedSize().frame(width: model.measureWord("temp"), alignment: .leading)
-                    .padding(.leading, sp.iconValue)
-            }
             Text(expectedGlyph).font(st.font(HeadMetrics.text, .bold)).foregroundColor(expectedColor)
                 .frame(width: HeadMetrics.glyph).padding(.leading, sp.iconValue)
             if open {
@@ -184,7 +179,7 @@ final class HeadDegreeTests: XCTestCase {
             return rows
         }
         var x = start
-        let parts = [("icon", HeadMetrics.thermIcon, CGFloat(0)), ("temp", open ? sp.iconValue + model.measureWord("temp") : 0, sp.iconValue),
+        let parts = [("icon", HeadMetrics.thermIcon, CGFloat(0)),
                      (expectedGlyph, sp.iconValue + HeadMetrics.glyph, sp.iconValue), (expectedWord, open ? sp.glyphWord + wordWidth : 0, sp.glyphWord)]
         for (part, partWidth, leading) in parts where partWidth > 0 {
             // 앞 여백에는 SF Symbol 의 프레임 밖 잉크가 걸칠 수 있으므로 글자 자리만 비교한다.
@@ -251,7 +246,7 @@ final class HeadDegreeTests: XCTestCase {
         }
     }
 
-    func testCpuDegreesKeepEveryPublicThermalGlyphInTheRenderedHead() async throws {
+    func testCpuDegreesKeepEveryPublicThermalGlyphInTheRenderedHeadWithoutItemLabel() async throws {
         for thermal in thermalCases {
             for job in [false, true] {
                 let model = try await makeModel(ok(80), job: job, thermal: thermal.state)
