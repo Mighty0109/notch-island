@@ -600,6 +600,7 @@ extension IslandModel {
         func deg(_ x: Double?) -> String { x.map { String(format: "%.0f°C", $0) } ?? "—" }
         let percents = v.fanPercents
         let fans = v.fanRPMs.isEmpty ? "—" : v.fanRPMs.enumerated().map { i, rpm in
+            guard let rpm else { return "팬\(i + 1) —" }
             let percent = percents[i].map { " \(Int($0.rounded()))%" } ?? ""
             return "팬\(i + 1) \(Int(rpm.rounded())) rpm" + percent
         }.joined(separator: " · ")

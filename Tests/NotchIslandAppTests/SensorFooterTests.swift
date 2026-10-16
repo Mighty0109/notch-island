@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 @testable import NotchIsland
 import NotchIslandCore
+import NotchIslandSensors
 
 private final class FixedFooterSensors: PrivateSensorProvider {
     let reading: Reading<SensorValues>
@@ -66,6 +67,29 @@ final class SensorFooterTests: XCTestCase {
         }
         let partial = IslandModel.sensorHelp(ok(SensorValues(fanRPMs: [3200, 12000], fanMaxRPMs: [nil, 8000])))
         XCTAssertTrue(partial.contains("팬1 3200 rpm · 팬2 12000 rpm 100%"))
+    }
+
+    func testUnreadableFirstFanKeepsActualNumbersThroughProviderAndModel() throws {
+        for firstRPM in [nil, -1.0, 30001.0] as [Double?] {
+            for secondRPM in [5300.0, 0] {
+                let provider = SMCSensorProvider { FooterFanSMC(firstRPM: firstRPM, secondRPM: secondRPM) }
+                let reading = provider.sample(now: now)
+                XCTAssertEqual(reading.status, .ok)
+                let v = try XCTUnwrap(reading.value)
+                XCTAssertEqual(v.fanRPMs, [nil, secondRPM])
+                let expectedText = secondRPM == 0 ? "fan 0%" : "fan 76%"
+                XCTAssertEqual(IslandModel.sensorText(reading), expectedText)
+                let help = IslandModel.sensorHelp(reading)
+                let expectedFans = "팬1 — · 팬2 \(Int(secondRPM)) rpm \(secondRPM == 0 ? 0 : 76)%"
+                XCTAssertTrue(help.contains(expectedFans), help)
+                XCTAssertNotEqual(IslandModel.sensorText(reading), "fan 정지", "못 읽은 팬이 있으면 전부 정지로 단정하지 않는다")
+                print("SMC fan F0Ac=\(String(describing: firstRPM)), F1Ac=\(Int(secondRPM)): \(expectedText), \(expectedFans)")
+            }
+        }
+        let unreadable = ok(SensorValues(fanRPMs: [nil, nil], fanMaxRPMs: [8000, 7000]))
+        XCTAssertNil(IslandModel.sensorText(unreadable))
+        XCTAssertTrue(IslandModel.sensorHelp(unreadable).contains("팬1 — · 팬2 —"))
+        XCTAssertNil(IslandModel.sensorText(ok(SensorValues(fanRPMs: [nil, 0], fanMaxRPMs: [8000, nil]))))
     }
 
     // MARK: 폭 — 684pt 고정 줄에서 가장 넓은 값끼리도 오른쪽 버튼과 겹치지 않는다
@@ -246,5 +270,28 @@ final class SensorFooterTests: XCTestCase {
 
     func testHiddenSensorCellRemovesItsWidth() {
         XCTAssertLessThan(naturalWidth(texts(sensor: nil)), naturalWidth(texts(sensor: widestSensor)))
+    }
+}
+
+/// 실제 SMC 키에서 팬 번호와 읽기 실패가 모델의 호버까지 유지되는지 확인한다.
+private final class FooterFanSMC: SMCSource {
+    let firstRPM: Double?
+    let secondRPM: Double
+    init(firstRPM: Double?, secondRPM: Double) { self.firstRPM = firstRPM; self.secondRPM = secondRPM }
+    func keyCount() -> Int? { 1 }
+    func key(at index: Int) -> String? { index == 0 ? "FNum" : nil }
+    func read(_ key: String) -> SMCValue? {
+        if key == "FNum" { return SMCValue(type: "ui8", bytes: [2]) }
+        let rpm: Double?
+        switch key {
+        case "F0Ac": rpm = firstRPM
+        case "F1Ac": rpm = secondRPM
+        case "F0Mx": rpm = 8000
+        case "F1Mx": rpm = 7000
+        default: rpm = nil
+        }
+        guard let rpm else { return nil }
+        let bits = Float(rpm).bitPattern
+        return SMCValue(type: "flt", bytes: (0..<4).map { UInt8((bits >> ($0 * 8)) & 0xff) })
     }
 }

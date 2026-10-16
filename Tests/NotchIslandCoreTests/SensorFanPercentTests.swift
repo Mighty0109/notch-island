@@ -34,4 +34,13 @@ final class SensorFanPercentTests: XCTestCase {
         XCTAssertEqual(SensorValues(fanRPMs: [0, 4000], fanMaxRPMs: [8000, 8000]).fanPercent, 25)
         XCTAssertNil(SensorValues(fanRPMs: [-1, .nan, .infinity], fanMaxRPMs: [8000, 8000, 8000]).fanPercent)
     }
+
+    func testUnreadableFansKeepTheirPositionsAndAreExcludedFromTheMean() {
+        let v = SensorValues(fanRPMs: [nil, 5300], fanMaxRPMs: [8000, 7000])
+        XCTAssertEqual(v.fanRPMs, [nil, 5300])
+        XCTAssertEqual(v.fanPercents, [nil, 5300.0 / 7000 * 100])
+        XCTAssertEqual(v.fanPercent, 76)
+        XCTAssertEqual(SensorValues(fanRPMs: [nil, 0], fanMaxRPMs: [8000, 7000]).fanPercent, 0)
+        XCTAssertNil(SensorValues(fanRPMs: [nil, nil], fanMaxRPMs: [8000, 7000]).fanPercent)
+    }
 }

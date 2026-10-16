@@ -6,17 +6,26 @@ import NotchIslandCore
 final class FakeSMC: SMCSource {
     var values: [String: SMCValue]
     let order: [String]
+    var failKeyIndexOnce: Int?
     private(set) var keyAtCalls = 0
     private(set) var keyCountCalls = 0
+    private(set) var enumeratedKeys: [String] = []
     private(set) var readCalls: [String] = []
 
-    init(_ values: [String: SMCValue]) {
+    init(_ values: [String: SMCValue], order: [String]? = nil) {
         self.values = values
-        self.order = values.keys.sorted()
+        self.order = order ?? values.keys.sorted()
     }
 
     func keyCount() -> Int? { keyCountCalls += 1; return order.count }
-    func key(at index: Int) -> String? { keyAtCalls += 1; return index < order.count ? order[index] : nil }
+    func key(at index: Int) -> String? {
+        keyAtCalls += 1
+        if failKeyIndexOnce == index { failKeyIndexOnce = nil; return nil }
+        guard order.indices.contains(index) else { return nil }
+        let key = order[index]
+        enumeratedKeys.append(key)
+        return key
+    }
     func read(_ key: String) -> SMCValue? { readCalls.append(key); return values[key] }
 
     static func flt(_ v: Float) -> SMCValue {
@@ -29,7 +38,7 @@ final class FakeSMC: SMCSource {
 final class SMCSensorProviderTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_000)
 
-    private func typical() -> FakeSMC {
+    private func typical(overrides: [String: SMCValue] = [:]) -> FakeSMC {
         FakeSMC([
             "Tp01": FakeSMC.flt(60), "Tp02": FakeSMC.flt(80), "Tp03": FakeSMC.flt(70),
             "Tg01": FakeSMC.flt(50), "Tg02": FakeSMC.flt(70),
@@ -37,7 +46,7 @@ final class SMCSensorProviderTests: XCTestCase {
             "FNum": FakeSMC.ui8(2), "F0Ac": FakeSMC.flt(5000), "F1Ac": FakeSMC.flt(5300),
             "F0Mx": FakeSMC.flt(8000), "F1Mx": FakeSMC.flt(7000),
             "Ta00": FakeSMC.flt(99),                       // 집계 대상 아닌 키는 무시
-        ])
+        ].merging(overrides) { _, replacement in replacement })
     }
 
     func testDecodeFloatAndUInt8() {
@@ -65,29 +74,40 @@ final class SMCSensorProviderTests: XCTestCase {
     }
 
     func testDropsUnrealisticValues() throws {
-        let smc = typical()
-        smc.values["Tp04"] = FakeSMC.flt(0)               // 0 이하
-        smc.values["Tp05"] = FakeSMC.flt(-12)
-        smc.values["Tp06"] = FakeSMC.flt(131)             // 130 초과
-        smc.values["Tg03"] = FakeSMC.flt(900)
-        smc.values["TB0T"] = FakeSMC.flt(0)
-        smc.values["F1Ac"] = FakeSMC.flt(-300)            // 음수 RPM
+        let smc = typical(overrides: [
+            "Tp04": FakeSMC.flt(0),                      // 0 이하
+            "Tp05": FakeSMC.flt(-12),
+            "Tp06": FakeSMC.flt(131),                    // 130 초과
+            "Tg03": FakeSMC.flt(900),
+            "TB0T": FakeSMC.flt(0),
+            "F1Ac": FakeSMC.flt(-300),                   // 음수 RPM
+        ])
         let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
+        for key in ["Tp04", "Tp05", "Tp06", "Tg03"] {
+            let enumerations = smc.enumeratedKeys.filter { $0 == key }.count
+            let reads = smc.readCalls.filter { $0 == key }.count
+            XCTAssertEqual(enumerations, 1, "\(key)는 실제 열거돼야 한다")
+            XCTAssertEqual(reads, 1, "\(key)는 필터 전에 실제 읽혀야 한다")
+            print("SMC invalid temperature \(key): enumerated=\(enumerations), read=\(reads)")
+        }
         XCTAssertEqual(try XCTUnwrap(v.cpuAverage), 70, accuracy: 0.001, "비현실 값은 평균에 안 들어간다")
         XCTAssertEqual(v.cpuMax, 80)
         XCTAssertEqual(try XCTUnwrap(v.gpuAverage), 60, accuracy: 0.001)
         XCTAssertNil(v.battery)
-        XCTAssertEqual(v.fanRPMs, [5000])
-        XCTAssertEqual(v.fanMaxRPMs, [8000])
+        XCTAssertEqual(v.fanRPMs, [5000, nil])
+        XCTAssertEqual(v.fanMaxRPMs, [8000, 7000])
     }
 
-    func testDiscardingFirstFanKeepsSecondFanPairedWithItsMaximum() throws {
-        let smc = typical()
-        smc.values["F0Ac"] = FakeSMC.flt(30001)
-        let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
-        XCTAssertEqual(v.fanRPMs, [5300])
-        XCTAssertEqual(v.fanMaxRPMs, [7000])
-        XCTAssertEqual(v.fanPercent, 76)
+    func testUnreadableFirstFanKeepsItsNumberAndSecondFanMaximum() throws {
+        for current in [nil, FakeSMC.flt(-1), FakeSMC.flt(30001)] as [SMCValue?] {
+            let smc = typical()
+            smc.values["F0Ac"] = current
+            let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
+            XCTAssertEqual(v.fanRPMs, [nil, 5300])
+            XCTAssertEqual(v.fanMaxRPMs, [8000, 7000])
+            XCTAssertEqual(v.fanPercents, [nil, 5300.0 / 7000 * 100])
+            XCTAssertEqual(v.fanPercent, 76)
+        }
     }
 
     func testMissingOrInvalidMaximumDoesNotDiscardCurrentRPMOrTemperature() throws {
@@ -127,6 +147,35 @@ final class SMCSensorProviderTests: XCTestCase {
         for key in ["FNum", "F0Mx", "F1Mx"] { XCTAssertEqual(smc.readCalls.filter { $0 == key }.count, 1, "\(key)는 시작 때 한 번") }
         let perSample = smc.readCalls.count - 3       // 시작의 FNum · 최고 RPM 2개
         XCTAssertEqual(perSample, 8 * 5)
+    }
+
+    func testIncompleteEnumerationFailsAndRetriesAtNextSample() throws {
+        let values = ["Tp01": FakeSMC.flt(70), "Tp02": FakeSMC.flt(80), "Tg01": FakeSMC.flt(60)]
+        for failedIndex in 0..<values.count {
+            let smc = FakeSMC(values, order: ["Tp01", "Tp02", "Tg01"])
+            smc.failKeyIndexOnce = failedIndex
+            let provider = SMCSensorProvider { smc }
+            let first = provider.sample(now: now)
+            XCTAssertEqual(first.status, .failed("SMC 키 열거 실패 (index \(failedIndex))"))
+            XCTAssertNil(first.value, "부분 계획은 값으로 내보내지 않는다")
+            XCTAssertTrue(smc.readCalls.isEmpty, "열거가 끝나기 전에는 값을 읽지 않는다")
+
+            let second = provider.sample(now: now.addingTimeInterval(2))
+            XCTAssertEqual(second.status, .ok)
+            XCTAssertEqual(second.timestamp.timeIntervalSince(first.timestamp), 2)
+            let v = try XCTUnwrap(second.value)
+            XCTAssertEqual(v.cpuAverage, 75)
+            XCTAssertEqual(v.cpuMax, 80)
+            XCTAssertEqual(v.gpuAverage, 60, "실패 index 뒤의 GPU 도 전체 계획에 들어간다")
+            XCTAssertEqual(smc.keyCountCalls, 2)
+            let expectedKeyCalls = failedIndex + 1 + values.count
+            XCTAssertEqual(smc.keyAtCalls, expectedKeyCalls)
+
+            XCTAssertEqual(provider.sample(now: now.addingTimeInterval(4)).status, .ok)
+            XCTAssertEqual(smc.keyCountCalls, 2, "완성한 계획은 다시 열거하지 않는다")
+            XCTAssertEqual(smc.keyAtCalls, expectedKeyCalls)
+            print("SMC enumeration retry index=\(failedIndex): first=\(first.status), +2s=\(second.status), CPU=\(String(describing: v.cpuAverage)), GPU=\(String(describing: v.gpuAverage)), keyCountCalls=\(smc.keyCountCalls)")
+        }
     }
 
     func testMaximumIsCachedWhileCurrentRPMIsResampled() throws {
@@ -194,7 +243,7 @@ final class RealSMCSmokeTests: XCTestCase {
         XCTAssertFalse(v.fanRPMs.isEmpty)
         XCTAssertEqual(v.fanRPMs.count, v.fanMaxRPMs.count)
         for i in v.fanRPMs.indices {
-            print("REAL_SMC fan\(i + 1) Ac=\(v.fanRPMs[i]) Mx=\(String(describing: v.fanMaxRPMs[i])) percent=\(String(describing: v.fanPercents[i]))")
+            print("REAL_SMC fan\(i + 1) Ac=\(String(describing: v.fanRPMs[i])) Mx=\(String(describing: v.fanMaxRPMs[i])) percent=\(String(describing: v.fanPercents[i]))")
         }
         XCTAssertNotNil(v.fanPercent, "팬이 있으면 유효한 최고 RPM 이 하나 이상 있어야 한다")
         XCTAssertEqual(first.value?.fanMaxRPMs, second.value?.fanMaxRPMs)
