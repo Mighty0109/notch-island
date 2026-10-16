@@ -461,11 +461,12 @@ final class IslandModel: ObservableObject {
         return w
     }
 
-    /// °C 는 세 자리 견본 폭을 예약한다. 접힘에서 숨기는 처리는 WordSlot 과 같은 뷰 경로가 맡는다.
+    /// 센서 확인 중과 °C 는 같은 세 자리 견본 폭을 예약한다. 접힘에서 숨기는 처리는 뷰 경로가 맡는다.
     var thermalWordWidth: CGFloat {
         let th = display(.thermal)
         guard !th.checking else { return 0 }
-        return measureWord(Self.cpuDegree(snapshot.sensors) == nil ? th.value : "100°")
+        let reserveDegree = snapshot.sensors.status == .checking || Self.cpuDegree(snapshot.sensors) != nil
+        return measureWord(reserveDegree ? "100°" : th.value)
     }
 
     /// 각 요소의 글리프·글자 폭(간격은 `HeadSpacing` 이 정한다)
@@ -591,7 +592,8 @@ extension IslandModel {
     }
 
     static func thermalWord(_ thermal: ThermalLevel, sensors: Reading<SensorValues>) -> String {
-        cpuDegree(sensors) ?? thermal.label
+        if sensors.status == .checking { return "" }
+        return cpuDegree(sensors) ?? thermal.label
     }
 
     /// 칸 호버 설명(`.help`): CPU 평균/최대 · GPU 평균 · 팬별 RPM·비율 · 배터리 °C · 출처.

@@ -5,9 +5,11 @@ import AppKit
 import NotchIslandCore
 
 private final class FixedHeadSensors: PrivateSensorProvider {
-    let reading: Reading<SensorValues>
+    private let lock = NSLock()
+    private var reading: Reading<SensorValues>
     init(_ reading: Reading<SensorValues>) { self.reading = reading }
-    func sample(now: Date) -> Reading<SensorValues> { reading }
+    func setReading(_ reading: Reading<SensorValues>) { lock.withLock { self.reading = reading } }
+    func sample(now: Date) -> Reading<SensorValues> { lock.withLock { reading } }
 }
 
 private struct FixedHeadThermal: ThermalSource {
@@ -28,7 +30,8 @@ final class HeadDegreeTests: XCTestCase {
     }
 
     private func makeModel(_ reading: Reading<SensorValues>, job: Bool,
-                           thermal: ProcessInfo.ThermalState = .serious) async throws -> IslandModel {
+                           thermal: ProcessInfo.ThermalState = .serious,
+                           sensors: FixedHeadSensors? = nil) async throws -> IslandModel {
         let suite = "com.mighty.notch-island.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -36,36 +39,41 @@ final class HeadDegreeTests: XCTestCase {
         settings.hoverExpand = false
         settings.localModelEnabled = false
         let model = IslandModel(settings: settings, thermal: ThermalProvider(source: FixedHeadThermal(state: thermal)),
-                                sensors: FixedHeadSensors(reading))
+                                sensors: sensors ?? FixedHeadSensors(reading))
         model.debugForceReduceMotion()
         // 첫 스냅샷 전부터 공개 단계·작업을 고정한다(배치 히스테리시스에도 실기 이력이 섞이지 않게).
         if job { model.debugToggleCharging() } else { model.debugSuppressJob() }
         model.debugTrigger(.memory)
         model.start()
         model.click(.head)
-        for _ in 0..<400 {
-            if model.snapshot.sensors.timestamp == reading.timestamp,
-               model.snapshot.sensors.source == reading.source { break }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
+        try await waitForSensors(reading, in: model)
         model.stop()
-        // NaN 은 자신과도 같지 않으므로 도착 여부는 고정 시각·출처·상태로 확인한다.
-        XCTAssertEqual(model.snapshot.sensors.timestamp, reading.timestamp, "가짜 센서값이 수집 경로를 통해 도착해야 한다")
-        XCTAssertEqual(model.snapshot.sensors.source, reading.source)
-        XCTAssertEqual(model.snapshot.sensors.status, reading.status)
         XCTAssertEqual(model.snapshot.thermal.value, ThermalProvider.level(from: thermal))
         return model
     }
 
+    private func waitForSensors(_ reading: Reading<SensorValues>, in model: IslandModel) async throws {
+        for _ in 0..<400 {
+            if model.snapshot.sensors.timestamp == reading.timestamp,
+               model.snapshot.sensors.source == reading.source,
+               model.snapshot.sensors.status == reading.status { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        // NaN 은 자신과도 같지 않으므로 도착 여부는 고정 시각·출처·상태로 확인한다.
+        XCTAssertEqual(model.snapshot.sensors.timestamp, reading.timestamp, "가짜 센서값이 수집 경로를 통해 도착해야 한다")
+        XCTAssertEqual(model.snapshot.sensors.source, reading.source)
+        XCTAssertEqual(model.snapshot.sensors.status, reading.status)
+    }
+
     func testThermalWordUsesRoundedCpuAverageAndKeepsFallbackForEveryLevel() {
         let fallbacks: [Reading<SensorValues>] = [
-            .checking(unit: "°C", at: now, source: "fixed"),
             .failed("x", unit: "°C", at: now, source: "fixed"),
             .unsupported("x", unit: "°C", at: now, source: "fixed"),
             Reading(value: nil, unit: "°C", timestamp: now, status: .ok, source: "fixed"),
             ok(nil), ok(0), ok(-1), ok(131), ok(.nan), ok(.infinity)
         ]
         for level in ThermalLevel.allCases {
+            XCTAssertEqual(IslandModel.thermalWord(level, sensors: .checking(unit: "°C", at: now, source: "fixed")), "")
             for reading in fallbacks { XCTAssertEqual(IslandModel.thermalWord(level, sensors: reading), level.label) }
             for (input, expected) in [(9.0, "9°"), (80.0, "80°"), (99.5, "100°"), (100.0, "100°"), (130.0, "130°")] {
                 XCTAssertEqual(IslandModel.thermalWord(level, sensors: ok(input)), expected)
@@ -75,8 +83,9 @@ final class HeadDegreeTests: XCTestCase {
 
     /// 실제 HeadStrip 을 카드가 받치는 폭과 내용에 꼭 맞춘 날개 폭 양쪽으로 렌더한다.
     /// 바깥 여백·내용 안쪽 끝·카메라 픽셀까지 검사해 좁은 날개에서의 침범을 검출한다.
+    @discardableResult
     private func assertRenderedInsideWings(_ model: IslandModel, expectedWord: String, tight: Bool,
-                                          expectedGlyph: String = "◆", expectedColor: Color = ThemeStyle.matrix.high) async throws {
+                                          expectedGlyph: String = "◆", expectedColor: Color = ThemeStyle.matrix.high) async throws -> HeadEdges {
         let layout = model.layout
         let open = model.phase.isOpen
         let ends = IslandGeometry.ends(layout.shape, progress: open ? 1 : 0)
@@ -128,6 +137,7 @@ final class HeadDegreeTests: XCTestCase {
                                 expectedGlyph: expectedGlyph, expectedColor: expectedColor,
                                 rightEdge: XCTUnwrap(edges.rightMaxX), width: width)
         print("HEAD degree=\(model.display(.thermal).value) open=\(open) tight=\(tight) wings=\(left)/\(right) camera pixels clear")
+        return edges
     }
 
     /// 실제 머리줄의 열 칸을 항목 이름이 없는 독립적인 Text 견본과 비교한다. 모델의 display/thermalWord 와
@@ -138,7 +148,7 @@ final class HeadDegreeTests: XCTestCase {
         let open = model.phase.isOpen
         let sp = HeadSpacing.at(open: open)
         let st = ThemeStyle.matrix
-        let wordWidth = model.measureWord(expectedWord.hasSuffix("°") ? "100°" : expectedWord)
+        let wordWidth = model.measureWord(expectedWord.isEmpty || expectedWord.hasSuffix("°") ? "100°" : expectedWord)
         let thermalWidth = HeadMetrics.thermIcon + sp.iconValue + HeadMetrics.glyph
             + (open ? sp.glyphWord + wordWidth : 0)
         let jobWidth = model.job.map {
@@ -185,13 +195,50 @@ final class HeadDegreeTests: XCTestCase {
             // 앞 여백에는 SF Symbol 의 프레임 밖 잉크가 걸칠 수 있으므로 글자 자리만 비교한다.
             let xs = Int(floor(x + leading)) + 2..<Int(ceil(x + partWidth)) + 2
             let actualRows = try inkRows(actual, xs: xs), expectedRows = try inkRows(reference, xs: xs)
-            XCTAssertFalse(expectedRows.isEmpty, "\(part): 문자 견본이 비어 있으면 안 된다")
+            if part.isEmpty {
+                XCTAssertTrue(expectedRows.isEmpty)
+                XCTAssertTrue(actualRows.isEmpty, "센서 확인 중 예약한 온도 자리에는 단계 단어를 포함한 잉크가 없어야 한다")
+            } else {
+                XCTAssertFalse(expectedRows.isEmpty, "\(part): 문자 견본이 비어 있으면 안 된다")
+            }
             XCTAssertEqual(actualRows.count, expectedRows.count, "\(part), open=\(open): 열 칸 글자 높이")
             let same = actualRows.count == expectedRows.count && zip(actualRows, expectedRows).allSatisfy { a, b in
                 a.count == b.count && zip(a, b).allSatisfy { abs(Int($0) - Int($1)) <= 1 }
             }
             XCTAssertTrue(same, "실제 HeadStrip 의 \(part), open=\(open) 는 독립 Text 견본 픽셀과 같아야 한다")
             x += partWidth
+        }
+    }
+
+    func testCheckingToCpuDegreeKeepsBlankReservedWordWidthInRenderedHead() async throws {
+        let checking = Reading<SensorValues>.checking(unit: "°C", at: now, source: "fixed test provider")
+        for job in [false, true] {
+            let sensors = FixedHeadSensors(checking)
+            let model = try await makeModel(checking, job: job, thermal: .nominal, sensors: sensors)
+            defer { model.stop() }
+            XCTAssertEqual(model.display(.thermal).value, "")
+            XCTAssertEqual(model.display(.thermal).glyph, "◇")
+            XCTAssertEqual(model.display(.thermal).spoken, "열 상태 보통")
+            let wordWidth = model.thermalWordWidth
+            XCTAssertEqual(wordWidth, model.measureWord("100°"))
+            let wings = model.wings.open
+            let blankEdges = try await assertRenderedInsideWings(model, expectedWord: "", tight: true,
+                                                                 expectedGlyph: "◇", expectedColor: ThemeStyle.matrix.ok)
+
+            let degree = ok(80)
+            sensors.setReading(degree)
+            model.start()
+            try await waitForSensors(degree, in: model)
+            model.stop()
+            XCTAssertEqual(model.display(.thermal).value, "80°")
+            XCTAssertEqual(model.display(.thermal).spoken, "열 상태 보통")
+            XCTAssertEqual(model.thermalWordWidth, wordWidth)
+            XCTAssertEqual(model.wings.open, wings)
+            let degreeEdges = try await assertRenderedInsideWings(model, expectedWord: "80°", tight: true,
+                                                                  expectedGlyph: "◇", expectedColor: ThemeStyle.matrix.ok)
+            XCTAssertEqual(try XCTUnwrap(blankEdges.rightMaxX) - XCTUnwrap(blankEdges.rightMinX),
+                           try XCTUnwrap(degreeEdges.rightMaxX) - XCTUnwrap(degreeEdges.rightMinX), accuracy: 1,
+                           "checking → ok(80) 전이 중 실제 머리줄 오른쪽 내용 폭 유지")
         }
     }
 
@@ -221,7 +268,6 @@ final class HeadDegreeTests: XCTestCase {
     func testFallbackBranchesRenderInsideWingsAndKeepCollapsedSize() async throws {
         let readings: [Reading<SensorValues>] = [
             ok(nil),
-            .checking(unit: "°C", at: now, source: "fixed"),
             .failed("x", unit: "°C", at: now, source: "fixed"),
             .unsupported("x", unit: "°C", at: now, source: "fixed"),
             Reading(value: nil, unit: "°C", timestamp: now, status: .ok, source: "fixed"),
