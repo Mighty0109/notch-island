@@ -159,8 +159,26 @@ public struct SensorValues: Equatable, Sendable {
     public var gpuAverage: Double?
     public var battery: Double?
     public var fanRPMs: [Double]
-    public init(cpuAverage: Double? = nil, cpuMax: Double? = nil, gpuAverage: Double? = nil, battery: Double? = nil, fanRPMs: [Double] = []) {
+    /// 현재 RPM 과 같은 순번. 최고 RPM 을 못 읽은 팬은 nil.
+    public var fanMaxRPMs: [Double?]
+    public init(cpuAverage: Double? = nil, cpuMax: Double? = nil, gpuAverage: Double? = nil, battery: Double? = nil,
+                fanRPMs: [Double] = [], fanMaxRPMs: [Double?] = []) {
         self.cpuAverage = cpuAverage; self.cpuMax = cpuMax; self.gpuAverage = gpuAverage; self.battery = battery; self.fanRPMs = fanRPMs
+        self.fanMaxRPMs = fanMaxRPMs
+    }
+
+    /// 팬별 최고 RPM 대비 비율(0...100). 최고 RPM 이 없는 팬은 평균에서 제외한다.
+    public var fanPercents: [Double?] {
+        fanRPMs.enumerated().map { i, rpm in
+            guard rpm.isFinite, rpm >= 0, fanMaxRPMs.indices.contains(i),
+                  let maximum = fanMaxRPMs[i], maximum.isFinite, maximum > 0 else { return nil }
+            return min(100, rpm / maximum * 100)
+        }
+    }
+
+    public var fanPercent: Int? {
+        let values = fanPercents.compactMap { $0 }
+        return values.isEmpty ? nil : Int((values.reduce(0, +) / Double(values.count)).rounded())
     }
 }
 

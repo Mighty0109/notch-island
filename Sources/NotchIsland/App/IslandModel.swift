@@ -37,7 +37,7 @@ struct JobInfo: Equatable {
 /// 슬롯(접힘 3칸 / 펼침 머리줄)에 그릴 값을 모양·글자·단계로 정리한 것
 struct SlotDisplay: Equatable {
     var glyph: String       // 단계 모양 (CPU 는 없음)
-    var value: String       // CPU: "9%" / 열·메모리: 단계 단어(툴팁·카드·펼침 단어용)
+    var value: String       // CPU: "9%" / 열: CPU 평균 °C 또는 단계 단어 / 메모리: 단계 단어
     var pct: String         // 메모리 사용 % (활성 상태 보기 "사용된 메모리" ÷ 물리 메모리)
     var level: Int          // 0 정상 · 1 주의 · 2 높음 — 색에 쓴다
     var spoken: String      // VoiceOver 라벨·호버 툴팁 (단어는 여기에만)
@@ -112,9 +112,10 @@ final class IslandModel: ObservableObject {
     var onLayoutChange: (() -> Void)?
 
     init(settings: SettingsStore, localModelProvider: LocalModelProvider = LocalModelProvider(),
+         thermal: ThermalProvider = ThermalProvider(),
          sensors: PrivateSensorProvider? = SMCSensorProvider()) {
         self.settings = settings
-        self.collector = MetricsCollector(sensors: sensors)
+        self.collector = MetricsCollector(thermal: thermal, sensors: sensors)
         self.localModelProvider = localModelProvider
         self.machine = IslandStateMachine(scheduler: DispatchScheduler())
         machine.hoverEnabled = settings.hoverExpand
@@ -460,13 +461,20 @@ final class IslandModel: ObservableObject {
         return w
     }
 
+    /// °C 는 세 자리 견본 폭을 예약한다. 접힘에서 숨기는 처리는 WordSlot 과 같은 뷰 경로가 맡는다.
+    var thermalWordWidth: CGFloat {
+        let th = display(.thermal)
+        guard !th.checking else { return 0 }
+        return measureWord(Self.cpuDegree(snapshot.sensors) == nil ? th.value : "100°")
+    }
+
     /// 각 요소의 글리프·글자 폭(간격은 `HeadSpacing` 이 정한다)
     private func headWidths() -> HeadContentWidths {
         let mem = display(.memory), th = display(.thermal)
         return HeadContentWidths(cpuIcon: HeadMetrics.cpuIcon, cpuValue: HeadMetrics.cpuValue,
                                  memIcon: HeadMetrics.memIcon, memValue: HeadMetrics.memValue, glyph: HeadMetrics.glyph,
                                  thermIcon: HeadMetrics.thermIcon,
-                                 memWord: mem.checking ? 0 : measureWord(mem.value), thermWord: th.checking ? 0 : measureWord(th.value),
+                                 memWord: mem.checking ? 0 : measureWord(mem.value), thermWord: th.checking ? 0 : thermalWordWidth,
                                  ring: job == nil ? 0 : HeadMetrics.ring,
                                  label: job.map { measureWord(jobLabelText($0)) } ?? 0,
                                  cpuLabel: measureWord(HeadLabel.cpu), memLabel: measureWord(HeadLabel.mem), thermLabel: measureWord(HeadLabel.thermal))
@@ -532,7 +540,7 @@ final class IslandModel: ObservableObject {
                 return SlotDisplay(glyph: ThemeStyle.glyphChecking, value: "", pct: "", level: 0, spoken: "열 상태 확인 중", checking: true)
             }
             let rec = recovered.contains(.thermal)
-            return SlotDisplay(glyph: ThemeStyle.glyph(raw: t.rawValue, recovered: rec), value: t.label, pct: "", level: min(2, t.rawValue),
+            return SlotDisplay(glyph: ThemeStyle.glyph(raw: t.rawValue, recovered: rec), value: Self.thermalWord(t, sensors: snapshot.sensors), pct: "", level: min(2, t.rawValue),
                                spoken: "열 상태 \(t.label)" + (rec ? " · 회복" : ""), checking: false)
         case .memory:
             let usage = snapshot.memoryUsage.value
@@ -563,25 +571,38 @@ extension IslandModel {
     var sensorText: String? { Self.sensorText(snapshot.sensors) }
     var sensorHelp: String { Self.sensorHelp(snapshot.sensors) }
 
-    /// `70° 5.3k rpm` — CPU 평균 °C + 가장 빠른 팬. 팬이 전부 0 이면 `70° fan 정지`, 팬이 없는 기기는 `70°` 만.
+    /// 유효한 최고 RPM 이 있는 팬들의 평균 비율. 팬 없음·최고 RPM 없음은 숨긴다.
     static func sensorText(_ r: Reading<SensorValues>) -> String? {
         switch r.status {
         case .unsupported: return nil
         case .ok:
-            guard let v = r.value else { return "temp 확인 중" }
-            let temp = v.cpuAverage.map { String(format: "%.0f°", $0) } ?? "—°"
-            guard let fastest = v.fanRPMs.max() else { return temp }
-            if fastest <= 0 { return temp + " fan 정지" }
-            return temp + String(format: " %.1fk rpm", fastest / 1000)
-        default: return "temp 확인 중"
+            guard let v = r.value else { return "fan 확인 중" }
+            guard let percent = v.fanPercent else { return nil }
+            if v.fanRPMs.allSatisfy({ $0 == 0 }) { return "fan 정지" }
+            return "fan \(percent)%"
+        case .checking: return "fan 확인 중"
+        case .failed: return "fan —"
         }
     }
 
-    /// 칸 호버 설명(`.help`): CPU 평균/최대 · GPU 평균 · 팬별 RPM · 배터리 °C · 출처.
+    private static func cpuDegree(_ r: Reading<SensorValues>) -> String? {
+        guard r.isOK, let average = r.value?.cpuAverage, average.isFinite, average > 0, average <= 130 else { return nil }
+        return "\(Int(average.rounded()))°"
+    }
+
+    static func thermalWord(_ thermal: ThermalLevel, sensors: Reading<SensorValues>) -> String {
+        cpuDegree(sensors) ?? thermal.label
+    }
+
+    /// 칸 호버 설명(`.help`): CPU 평균/최대 · GPU 평균 · 팬별 RPM·비율 · 배터리 °C · 출처.
     static func sensorHelp(_ r: Reading<SensorValues>) -> String {
         guard r.isOK, let v = r.value else { return "온도·팬 확인 중\n출처: \(SMCSensorProvider.source)" }
         func deg(_ x: Double?) -> String { x.map { String(format: "%.0f°C", $0) } ?? "—" }
-        let fans = v.fanRPMs.isEmpty ? "—" : v.fanRPMs.enumerated().map { "팬\($0.offset + 1) \(Int($0.element.rounded())) rpm" }.joined(separator: " · ")
+        let percents = v.fanPercents
+        let fans = v.fanRPMs.isEmpty ? "—" : v.fanRPMs.enumerated().map { i, rpm in
+            let percent = percents[i].map { " \(Int($0.rounded()))%" } ?? ""
+            return "팬\(i + 1) \(Int(rpm.rounded())) rpm" + percent
+        }.joined(separator: " · ")
         return ["CPU 평균 \(deg(v.cpuAverage)) · 최대 \(deg(v.cpuMax))", "GPU 평균 \(deg(v.gpuAverage))", fans,
                 "배터리 \(deg(v.battery))", "출처: \(SMCSensorProvider.source)"].joined(separator: "\n")
     }

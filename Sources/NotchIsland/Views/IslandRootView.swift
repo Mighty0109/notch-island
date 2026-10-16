@@ -117,7 +117,10 @@ struct HeadStrip: View {
                 SlotView(model: model, kind: .cpu)
                 if !onRight { MemoryGroup(model: model).transition(.opacity) }
             }
-            .background(GeometryReader { g in Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(leftMinX: g.frame(in: .named("head")).minX, rightMaxX: nil)) })
+            .background(GeometryReader { g in
+                let f = g.frame(in: .named("head"))
+                Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(leftMinX: f.minX, leftMaxX: f.maxX))
+            })
             .padding(.leading, sp.wingPad).frame(width: wingLeft, alignment: .leading)
 
             Color.clear.frame(width: notchWidth)         // 카메라 영역: 아무것도 그리지 않는다
@@ -127,6 +130,7 @@ struct HeadStrip: View {
                 HStack(spacing: 0) {
                     SlotView(model: model, kind: .thermal)
                     WordSlot(model: model, text: th.checking ? "" : th.value)
+                        .frame(width: model.phase.isOpen && !th.checking ? model.thermalWordWidth + sp.glyphWord : 0, alignment: .leading)
                 }
                 if let job = model.job {
                     HStack(spacing: 0) {
@@ -136,7 +140,10 @@ struct HeadStrip: View {
                     .padding(.leading, sp.ringGap - sp.slotGap)        // 온도 ↔ 링 간격만 더 넓다
                 }
             }
-            .background(GeometryReader { g in Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(leftMinX: nil, rightMaxX: g.frame(in: .named("head")).maxX)) })
+            .background(GeometryReader { g in
+                let f = g.frame(in: .named("head"))
+                Color.clear.preference(key: HeadEdgesKey.self, value: HeadEdges(rightMinX: f.minX, rightMaxX: f.maxX))
+            })
             .padding(.trailing, sp.wingPad).frame(width: wingRight, alignment: .trailing)
         }
         .coordinateSpace(name: "head")
@@ -151,12 +158,16 @@ struct HeadStrip: View {
 }
 
 /// 머리줄 안 좌우 날개 내용의 바깥 끝(머리줄 좌표) — 규칙 "왼쪽 첫 칸 = 섬 왼끝 + 여백, 오른쪽 끝 = 섬 오른끝 − 여백"을 테스트가 잰다.
-struct HeadEdges: Equatable { var leftMinX: CGFloat?; var rightMaxX: CGFloat? }
+struct HeadEdges: Equatable {
+    var leftMinX: CGFloat?, leftMaxX: CGFloat?, rightMinX: CGFloat?, rightMaxX: CGFloat?
+}
 struct HeadEdgesKey: PreferenceKey {
     static var defaultValue = HeadEdges()
     static func reduce(value: inout HeadEdges, nextValue: () -> HeadEdges) {
         let n = nextValue()
         if let l = n.leftMinX { value.leftMinX = l }
+        if let l = n.leftMaxX { value.leftMaxX = l }
+        if let r = n.rightMinX { value.rightMinX = r }
         if let r = n.rightMaxX { value.rightMaxX = r }
     }
 }

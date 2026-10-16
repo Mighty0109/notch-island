@@ -15,7 +15,7 @@ final class HeadAlignTests: XCTestCase {
         addTeardownBlock { d.removePersistentDomain(forName: suite) }
         let s = SettingsStore(defaults: d)
         s.hoverExpand = false
-        let m = IslandModel(settings: s)
+        let m = IslandModel(settings: s, sensors: nil)
         if job { m.debugToggleCharging() }
         return m
     }

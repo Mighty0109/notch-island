@@ -35,6 +35,7 @@ final class SMCSensorProviderTests: XCTestCase {
             "Tg01": FakeSMC.flt(50), "Tg02": FakeSMC.flt(70),
             "TB0T": FakeSMC.flt(31),
             "FNum": FakeSMC.ui8(2), "F0Ac": FakeSMC.flt(5000), "F1Ac": FakeSMC.flt(5300),
+            "F0Mx": FakeSMC.flt(8000), "F1Mx": FakeSMC.flt(7000),
             "Ta00": FakeSMC.flt(99),                       // 집계 대상 아닌 키는 무시
         ])
     }
@@ -59,6 +60,8 @@ final class SMCSensorProviderTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(v.gpuAverage), 60, accuracy: 0.001)
         XCTAssertEqual(v.battery, 31)
         XCTAssertEqual(v.fanRPMs, [5000, 5300])
+        XCTAssertEqual(v.fanMaxRPMs, [8000, 7000])
+        XCTAssertEqual(v.fanPercent, 69)
     }
 
     func testDropsUnrealisticValues() throws {
@@ -75,6 +78,35 @@ final class SMCSensorProviderTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(v.gpuAverage), 60, accuracy: 0.001)
         XCTAssertNil(v.battery)
         XCTAssertEqual(v.fanRPMs, [5000])
+        XCTAssertEqual(v.fanMaxRPMs, [8000])
+    }
+
+    func testDiscardingFirstFanKeepsSecondFanPairedWithItsMaximum() throws {
+        let smc = typical()
+        smc.values["F0Ac"] = FakeSMC.flt(30001)
+        let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
+        XCTAssertEqual(v.fanRPMs, [5300])
+        XCTAssertEqual(v.fanMaxRPMs, [7000])
+        XCTAssertEqual(v.fanPercent, 76)
+    }
+
+    func testMissingOrInvalidMaximumDoesNotDiscardCurrentRPMOrTemperature() throws {
+        let badMaxima: [SMCValue?] = [nil, FakeSMC.flt(0), FakeSMC.flt(-1), FakeSMC.flt(30001),
+                                      FakeSMC.flt(.nan), FakeSMC.flt(.infinity), SMCValue(type: "hex_", bytes: [0])]
+        for maximum in badMaxima {
+            let smc = typical()
+            smc.values["F0Mx"] = maximum
+            let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
+            XCTAssertEqual(v.fanRPMs, [5000, 5300])
+            XCTAssertEqual(v.fanMaxRPMs, [nil, 7000])
+            XCTAssertEqual(v.fanPercent, 76)
+            XCTAssertEqual(v.cpuAverage, 70)
+        }
+        let smc = typical()
+        smc.values["F0Mx"] = nil; smc.values["F1Mx"] = nil
+        let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
+        XCTAssertNil(v.fanPercent)
+        XCTAssertEqual(v.fanRPMs.count, 2)
     }
 
     func testEveryValueUnrealisticIsFailedNotZero() {
@@ -92,8 +124,20 @@ final class SMCSensorProviderTests: XCTestCase {
         XCTAssertEqual(smc.keyAtCalls, smc.order.count, "키 목록 열거는 키 수만큼 1회")
         XCTAssertFalse(smc.readCalls.contains("Ta00"), "열거 뒤엔 필요한 키만 읽는다")
         // 샘플 1회당: Tp 3 + Tg 2 + TB0T 1 + F 2 = 8회 (FNum 은 시작 때 한 번)
-        let perSample = smc.readCalls.count - 1       // 시작의 FNum
+        for key in ["FNum", "F0Mx", "F1Mx"] { XCTAssertEqual(smc.readCalls.filter { $0 == key }.count, 1, "\(key)는 시작 때 한 번") }
+        let perSample = smc.readCalls.count - 3       // 시작의 FNum · 최고 RPM 2개
         XCTAssertEqual(perSample, 8 * 5)
+    }
+
+    func testMaximumIsCachedWhileCurrentRPMIsResampled() throws {
+        let smc = typical()
+        let provider = SMCSensorProvider { smc }
+        _ = provider.sample(now: now)
+        smc.values["F0Mx"] = FakeSMC.flt(1)
+        smc.values["F0Ac"] = FakeSMC.flt(0)
+        let v = try XCTUnwrap(provider.sample(now: now.addingTimeInterval(2)).value)
+        XCTAssertEqual(v.fanRPMs, [0, 5300])
+        XCTAssertEqual(v.fanMaxRPMs, [8000, 7000])
     }
 
     func testNothingIsOpenedBeforeFirstSample() {
@@ -114,6 +158,8 @@ final class SMCSensorProviderTests: XCTestCase {
         let smc = FakeSMC(["Tp01": FakeSMC.flt(40), "FNum": FakeSMC.ui8(0)])
         let v = try XCTUnwrap(SMCSensorProvider { smc }.sample(now: now).value)
         XCTAssertEqual(v.fanRPMs, [])
+        XCTAssertEqual(v.fanMaxRPMs, [])
+        XCTAssertNil(v.fanPercent)
         XCTAssertEqual(v.cpuAverage, 40)
     }
 
@@ -146,5 +192,11 @@ final class RealSMCSmokeTests: XCTestCase {
         XCTAssertNotNil(v.cpuAverage); XCTAssertNotNil(v.gpuAverage)
         XCTAssertTrue((0.000_001...130).contains(v.cpuAverage ?? 0))
         XCTAssertFalse(v.fanRPMs.isEmpty)
+        XCTAssertEqual(v.fanRPMs.count, v.fanMaxRPMs.count)
+        for i in v.fanRPMs.indices {
+            print("REAL_SMC fan\(i + 1) Ac=\(v.fanRPMs[i]) Mx=\(String(describing: v.fanMaxRPMs[i])) percent=\(String(describing: v.fanPercents[i]))")
+        }
+        XCTAssertNotNil(v.fanPercent, "팬이 있으면 유효한 최고 RPM 이 하나 이상 있어야 한다")
+        XCTAssertEqual(first.value?.fanMaxRPMs, second.value?.fanMaxRPMs)
     }
 }

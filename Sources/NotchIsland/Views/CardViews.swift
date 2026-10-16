@@ -16,19 +16,8 @@ extension IslandModel {
         guard let d = snapshot.disk.value else { return "disk 확인 중" }
         return String(format: "disk %.0fG 남음", d.freeGB)
     }
-    var netText: String {
-        guard let n = snapshot.network.value else { return "↓— ↑—" }
-        return "↓\(compactRate(n.downBytesPerSec)) ↑\(compactRate(n.upBytesPerSec))"
-    }
     var clockText: String { IslandModel.clockFormatter.string(from: snapshot.updatedAt) }
     static let clockFormatter: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
-}
-
-/// 상태줄용 짧은 속도 표기 — `0.4K` · `1.2M` (시안)
-func compactRate(_ bytesPerSec: Double) -> String {
-    // 상태줄 폭(684pt)에 들어가게 두 자리 이상이면 소수점을 뗀다: 0.4K · 12K · 354K · 1.2M
-    let (v, unit) = bytesPerSec >= 1_000_000 ? (bytesPerSec / 1_000_000, "M") : (bytesPerSec / 1000, "K")
-    return String(format: v >= 10 ? "%.0f%@" : "%.1f%@", v, unit)
 }
 
 /// 카드 줄 순번(`RevealTiming.lineStart` 의 입력) — 시안의 DOM 순서: 프롬프트 · 작업 · cpu · top5(머리+5) · cores(머리+18) · llm(머리+6) · 로그 3 · 상태줄
@@ -363,17 +352,17 @@ struct PaneGrid: View {
     }
 }
 
-// MARK: - Powerline 상태줄 (시각 ▸ 메모리 ▸ 디스크·네트·온도·팬 ◂ 활성 상태 보기)
+// MARK: - Powerline 상태줄 (시각 ▸ 메모리 ▸ 디스크·팬 ◂ 활성 상태 보기 열기)
 
 /// 상태줄 칸 문구 묶음. 센서 칸은 nil 이면 숨긴다.
 struct PowerlineTexts: Equatable {
-    var clk: String, mem: String, disk: String, net: String, sensor: String?
+    var clk: String, mem: String, disk: String, sensor: String?
     @MainActor init(model: IslandModel) {
-        clk = model.clockText; mem = model.memoryUsedText; disk = model.diskText; net = model.netText
+        clk = model.clockText; mem = model.memoryUsedText; disk = model.diskText
         sensor = model.sensorText
     }
-    init(clk: String, mem: String, disk: String, net: String, sensor: String?) {
-        self.clk = clk; self.mem = mem; self.disk = disk; self.net = net; self.sensor = sensor
+    init(clk: String, mem: String, disk: String, sensor: String?) {
+        self.clk = clk; self.mem = mem; self.disk = disk; self.sensor = sensor
     }
 }
 
@@ -394,23 +383,20 @@ struct PowerlineFooter: View {
         let after = { (x: Double) -> Double in e - x / (RevealTiming.cardCharsPerSecond * cell) }
         let xMem = Double(t.clk.count) * cell + 18 + 8
         let xDisk = xMem + Double(t.mem.count) * cell + 18 + 8
-        let xNet = xDisk + Double(t.disk.count) * cell + 18
-        let xSensor = xNet + Double(t.net.count) * cell + 18
+        let xSensor = xDisk + Double(t.disk.count) * cell + 18
         return HStack(spacing: 0) {
             seg(t.clk, TermStyle.fg, TermStyle.segA, after(0))
             ChevronShape(pointsRight: true).fill(TermStyle.segA).frame(width: 8, height: 24).background(TermStyle.segB)
             seg(t.mem, TermStyle.fg, TermStyle.segB, after(xMem))
             ChevronShape(pointsRight: true).fill(TermStyle.segB).frame(width: 8, height: 24).background(TermStyle.segC)
             seg(t.disk, TermStyle.fg2, TermStyle.segC, after(xDisk))
-            seg(t.net, TermStyle.fg2, TermStyle.segC, after(xNet))
             if let sensor = t.sensor {
                 seg(sensor, TermStyle.fg2, TermStyle.segC, after(xSensor)).help(sensorHelp)
             }
             Spacer(minLength: 0)
             ChevronShape(pointsRight: false).fill(TermStyle.segC).frame(width: 8, height: 24)
             Button { ActionService.openActivityMonitor() } label: {
-                // 여백·단위를 복원한 최대 조합이 684pt 안에 들도록 버튼 문구만 줄인다.
-                TypedLine(segs: [TermSeg("활성 상태 보기", TermStyle.fg, .semibold)], elapsed: e - 0.19)
+                TypedLine(segs: [TermSeg("활성 상태 보기 열기", TermStyle.fg, .semibold)], elapsed: e - 0.19)
                     .padding(.horizontal, 12).frame(height: 24).background(TermStyle.segA)
             }
             .buttonStyle(.plain)

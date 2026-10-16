@@ -3,6 +3,12 @@ import SwiftUI
 @testable import NotchIsland
 import NotchIslandCore
 
+private final class FixedFooterSensors: PrivateSensorProvider {
+    let reading: Reading<SensorValues>
+    init(_ reading: Reading<SensorValues>) { self.reading = reading }
+    func sample(now: Date) -> Reading<SensorValues> { reading }
+}
+
 /// 상태줄 센서 칸: 문구 · 숨김 · 폭(684pt) 계약.
 @MainActor
 final class SensorFooterTests: XCTestCase {
@@ -10,31 +16,56 @@ final class SensorFooterTests: XCTestCase {
 
     private func ok(_ v: SensorValues) -> Reading<SensorValues> { .ok(v, unit: "°C", at: now, source: "SMC") }
 
-    func testTextShowsCpuAverageAndFastestFan() {
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 70.2, fanRPMs: [5000, 5312]))), "70° 5.3k rpm")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 99.4, fanRPMs: [7826]))), "99° 7.8k rpm")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 99.6, fanRPMs: [7826]))), "100° 7.8k rpm", "세 자리 온도에도 rpm 단위 유지")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 45, fanRPMs: [800]))), "45° 0.8k rpm")
+    private func makeModel(_ reading: Reading<SensorValues>) async throws -> IslandModel {
+        let suite = "com.mighty.notch-island.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let settings = SettingsStore(defaults: defaults)
+        settings.hoverExpand = false
+        settings.localModelEnabled = false
+        let model = IslandModel(settings: settings, sensors: FixedFooterSensors(reading))
+        model.debugForceReduceMotion()
+        model.start()
+        model.click(.head)
+        for _ in 0..<400 {
+            if model.snapshot.sensors == reading { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        model.stop()
+        XCTAssertEqual(model.snapshot.sensors, reading, "고정 Reading 이 수집기와 모델을 거쳐야 한다")
+        return model
+    }
+
+    func testTextShowsMeanFanPercentWithoutTemperature() {
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 80, fanRPMs: [2000, 6000], fanMaxRPMs: [4000, 8000]))), "fan 63%")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(fanRPMs: [995], fanMaxRPMs: [1000]))), "fan 100%")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(fanRPMs: [12000], fanMaxRPMs: [8000]))), "fan 100%")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(fanRPMs: [3000, 4000], fanMaxRPMs: [nil, 8000]))), "fan 50%")
     }
 
     func testStoppedFansAndFanlessMachines() {
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 70, fanRPMs: [0, 0]))), "70° fan 정지")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 38, fanRPMs: []))), "38°", "팬 없는 기기")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 70, fanRPMs: [0, 4000]))), "70° 4.0k rpm", "한 대라도 돌면 가장 빠른 팬")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: 70, fanRPMs: [0, 0], fanMaxRPMs: [8000, 8000]))), "fan 정지")
+        XCTAssertNil(IslandModel.sensorText(ok(SensorValues(cpuAverage: 38))), "팬 없는 기기")
+        XCTAssertNil(IslandModel.sensorText(ok(SensorValues(fanRPMs: [4000]))), "최고 RPM 없음")
+        XCTAssertNil(IslandModel.sensorText(ok(SensorValues(fanRPMs: [0, 0]))), "정지해도 최고 RPM 없으면 숨김")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(fanRPMs: [0, 4000], fanMaxRPMs: [8000, 8000]))), "fan 25%")
+        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(fanRPMs: [1], fanMaxRPMs: [8000]))), "fan 0%", "반올림 0% 는 정지와 다름")
     }
 
     func testUnsupportedHidesCellAndCheckingFollowsExistingPattern() {
         XCTAssertNil(IslandModel.sensorText(.unsupported("x", unit: "°C", at: now, source: "SMC")), "미지원이면 칸 자체를 숨긴다")
-        XCTAssertEqual(IslandModel.sensorText(.checking(unit: "°C", at: now, source: "SMC")), "temp 확인 중")
-        XCTAssertEqual(IslandModel.sensorText(.failed("x", unit: "°C", at: now, source: "SMC")), "temp 확인 중")
-        XCTAssertEqual(IslandModel.sensorText(ok(SensorValues(cpuAverage: nil, fanRPMs: [5000]))), "—° 5.0k rpm")
+        XCTAssertEqual(IslandModel.sensorText(.checking(unit: "°C", at: now, source: "SMC")), "fan 확인 중")
+        XCTAssertEqual(IslandModel.sensorText(.failed("x", unit: "°C", at: now, source: "SMC")), "fan —")
+        XCTAssertEqual(IslandModel.sensorText(Reading(value: nil, unit: "°C", timestamp: now, status: .ok, source: "SMC")), "fan 확인 중")
     }
 
     func testHelpListsAllAggregatesAndSource() {
-        let h = IslandModel.sensorHelp(ok(SensorValues(cpuAverage: 70, cpuMax: 82, gpuAverage: 61, battery: 31, fanRPMs: [5012, 4990])))
-        for needle in ["CPU 평균 70°C", "최대 82°C", "GPU 평균 61°C", "팬1 5012 rpm", "팬2 4990 rpm", "배터리 31°C", "SMC (비공개 · 키 의미 추정)"] {
+        let h = IslandModel.sensorHelp(ok(SensorValues(cpuAverage: 70, cpuMax: 82, gpuAverage: 61, battery: 31, fanRPMs: [5012, 4990], fanMaxRPMs: [8000, 10000])))
+        for needle in ["CPU 평균 70°C", "최대 82°C", "GPU 평균 61°C", "팬1 5012 rpm 63%", "팬2 4990 rpm 50%", "배터리 31°C", "SMC (비공개 · 키 의미 추정)"] {
             XCTAssertTrue(h.contains(needle), "\(needle) ⊄ \(h)")
         }
+        let partial = IslandModel.sensorHelp(ok(SensorValues(fanRPMs: [3200, 12000], fanMaxRPMs: [nil, 8000])))
+        XCTAssertTrue(partial.contains("팬1 3200 rpm · 팬2 12000 rpm 100%"))
     }
 
     // MARK: 폭 — 684pt 고정 줄에서 가장 넓은 값끼리도 오른쪽 버튼과 겹치지 않는다
@@ -44,10 +75,10 @@ final class SensorFooterTests: XCTestCase {
         return host.fittingSize.width
     }
 
-    private var widestSensor: String { IslandModel.sensorText(ok(SensorValues(cpuAverage: 130, fanRPMs: [10000])))! }
+    private var widestSensor: String { IslandModel.sensorText(.checking(unit: "°C", at: now, source: "SMC"))! }
 
     private func texts(sensor: String?) -> PowerlineTexts {
-        PowerlineTexts(clk: "23:59:59", mem: "mem 127.9/128G ◆", disk: "disk 1960G 남음", net: "↓999K ↑999K", sensor: sensor)
+        PowerlineTexts(clk: "23:59:59", mem: "mem 127.9/128G ◆", disk: "disk 1960G 남음", sensor: sensor)
     }
 
     func testWidestCellsFitIn684WithTheSensorCell() {
@@ -56,15 +87,38 @@ final class SensorFooterTests: XCTestCase {
         XCTAssertLessThanOrEqual(w, 684, "가장 넓을 때 줄 자연 폭 \(w)pt 가 684pt 를 넘으면 버튼과 겹친다")
     }
 
+    /// 기대 문구는 분기 표의 리터럴이다. 실제 row/seg/TypedLine 을 재사용하지 않는
+    /// Text 견본이므로 fan 문구 누락·오표시·숨김 실패·버튼 문구 회귀도 검출한다.
+    private func expectedRow(_ t: PowerlineTexts, sensor: String?) -> some View {
+        func text(_ value: String, _ fg: Color, _ bg: Color) -> some View {
+            Text(value).font(TermStyle.font(12)).foregroundColor(fg)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 8).frame(height: 24).background(bg)
+        }
+        return HStack(spacing: 0) {
+            text(t.clk, TermStyle.fg, TermStyle.segA)
+            ChevronShape(pointsRight: true).fill(TermStyle.segA).frame(width: 8, height: 24).background(TermStyle.segB)
+            text(t.mem, TermStyle.fg, TermStyle.segB)
+            ChevronShape(pointsRight: true).fill(TermStyle.segB).frame(width: 8, height: 24).background(TermStyle.segC)
+            text(t.disk, TermStyle.fg2, TermStyle.segC)
+            if let sensor { text(sensor, TermStyle.fg2, TermStyle.segC) }
+            Spacer(minLength: 0)
+            ChevronShape(pointsRight: false).fill(TermStyle.segC).frame(width: 8, height: 24)
+            Text("활성 상태 보기 열기").font(TermStyle.font(12, .semibold)).foregroundColor(TermStyle.fg)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, 12).frame(height: 24).background(TermStyle.segA)
+        }
+    }
+
     /// 자연 폭에서 그린 원본과 684pt 렌더의 좌/우 픽셀 열이 일치해야 한다.
     /// 달라도 되는 것은 Spacer의 투명한 폭뿐이다(글자 축소·잘림·버튼 겹침을 검출).
-    private func assertUnchangedRendering(_ t: PowerlineTexts, naturalWidth: CGFloat, label: String) throws {
+    private func assertUnchangedRendering(_ t: PowerlineTexts, expectedSensor: String?, naturalWidth: CGFloat,
+                                          label: String, model: IslandModel? = nil) throws {
         func transparent(_ column: Data) -> Bool {
             stride(from: 3, to: column.count, by: 4).allSatisfy { column[$0] == 0 }
         }
-        func columns(width: CGFloat) throws -> [Data] {
-            let renderer = ImageRenderer(content: PowerlineFooter.row(t, sensorHelp: "", e: .infinity)
-                .frame(width: width, height: 24).padding(2))
+        func columns<V: View>(_ content: V, width: CGFloat) throws -> [Data] {
+            let renderer = ImageRenderer(content: content.frame(width: width, height: 24).padding(2))
             renderer.scale = 1
             let cg = try XCTUnwrap(renderer.cgImage)
             XCTAssertEqual(cg.width, Int(width) + 4)
@@ -90,12 +144,21 @@ final class SensorFooterTests: XCTestCase {
             }
             return Array(all.dropFirst(2).dropLast(2))
         }
-        let natural = try columns(width: ceil(naturalWidth))
-        let fixed = try columns(width: 684)
+        let natural = try columns(PowerlineFooter.row(t, sensorHelp: "", e: .infinity), width: ceil(naturalWidth))
+        let fixed: [Data]
+        if let model {
+            fixed = try columns(PowerlineFooter(model: model, e: .infinity), width: 684)
+        } else {
+            fixed = try columns(PowerlineFooter.row(t, sensorHelp: "", e: .infinity), width: 684)
+        }
+        let expected = try columns(expectedRow(t, sensor: expectedSensor), width: 684)
         // 색 공간 변환의 8비트 반올림 차이(1/255)만 허용하며 픽셀 위치는 바꾸지 않는다.
         func samePixels(_ lhs: Data, _ rhs: Data) -> Bool {
             lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { abs(Int($0) - Int($1)) <= 1 }
         }
+        XCTAssertEqual(fixed.count, expected.count)
+        let different = zip(fixed, expected).filter { !samePixels($0, $1) }.count
+        XCTAssertEqual(different, 0, "\(label): 실제 footer 는 \(expectedSensor ?? "팬 칸 숨김") · 활성 상태 보기 열기 견본과 같아야 한다")
         let prefix = zip(natural, fixed).prefix { samePixels($0, $1) }.count
         let suffix = zip(natural.reversed(), fixed.reversed()).prefix { samePixels($0, $1) }.count
         if prefix + suffix < natural.count {
@@ -109,35 +172,58 @@ final class SensorFooterTests: XCTestCase {
         }
     }
 
-    func testEveryFormatterBranchFitsIn684WithWidestOtherCells() throws {
-        var cases: [(String, Reading<SensorValues>)] = []
-        for temp in [70.0, 99.4, 99.6, 100, 130] {
-            for rpm in [0.0, 7826, 10000] {
-                cases.append(("\(temp)C/\(rpm)rpm", ok(SensorValues(cpuAverage: temp, fanRPMs: [rpm]))))
+    func testEveryFormatterBranchFitsIn684WithWidestOtherCells() async throws {
+        var cases: [(String, Reading<SensorValues>, String?)] = []
+        for count in [1, 2] {
+            for (rpm, expected) in [(0.0, "fan 정지"), (1, "fan 0%"), (100, "fan 1%"), (5000, "fan 50%"),
+                                    (9950, "fan 100%"), (10000, "fan 100%"), (12000, "fan 100%")] {
+                cases.append(("\(count)fan/\(rpm)rpm", ok(SensorValues(cpuAverage: 130,
+                    fanRPMs: Array(repeating: rpm, count: count), fanMaxRPMs: Array(repeating: 10000, count: count))), expected))
             }
         }
         cases += [
-            ("checking", .checking(unit: "°C", at: now, source: "SMC")),
-            ("failed", .failed("x", unit: "°C", at: now, source: "SMC")),
-            ("unsupported", .unsupported("x", unit: "°C", at: now, source: "SMC")),
-            ("fanless", ok(SensorValues(cpuAverage: 130, fanRPMs: []))),
-            ("no CPU", ok(SensorValues(cpuAverage: nil, fanRPMs: [10000])))
+            ("checking", .checking(unit: "°C", at: now, source: "SMC"), "fan 확인 중"),
+            ("failed", .failed("x", unit: "°C", at: now, source: "SMC"), "fan —"),
+            ("unsupported", .unsupported("x", unit: "°C", at: now, source: "SMC"), nil),
+            ("fanless", ok(SensorValues(cpuAverage: 130, fanRPMs: [])), nil),
+            ("nil value", Reading(value: nil, unit: "°C", timestamp: now, status: .ok, source: "SMC"), "fan 확인 중"),
+            ("no maximum", ok(SensorValues(fanRPMs: [10000, 9000])), nil),
+            ("stopped/no maximum", ok(SensorValues(fanRPMs: [0, 0])), nil),
+            ("partial maximum", ok(SensorValues(fanRPMs: [5000, 4000], fanMaxRPMs: [nil, 8000])), "fan 50%"),
+            ("mixed stopped", ok(SensorValues(fanRPMs: [0, 4000], fanMaxRPMs: [8000, 8000])), "fan 25%"),
+            ("different maxima", ok(SensorValues(fanRPMs: [2000, 6000], fanMaxRPMs: [4000, 8000])), "fan 63%"),
+            ("no CPU", ok(SensorValues(fanRPMs: [10000], fanMaxRPMs: [10000])), "fan 100%")
         ]
         var widest: (label: String, width: CGFloat) = ("", 0)
-        for (label, reading) in cases {
-            let sensor = IslandModel.sensorText(reading)
-            let t = texts(sensor: sensor)
-            let w = naturalWidth(t)
-            print("FOOTER case \(label) [\(sensor ?? "hidden")] natural width = \(w)")
-            XCTAssertLessThanOrEqual(w, 684, "\(label): 실제 footer 자연 폭 \(w)pt")
-            try assertUnchangedRendering(t, naturalWidth: w, label: label)
-            if w > widest.width { widest = (label, w) }
+        var combinations = 0
+        let memories = ["◇", "◈", "◆", "✓", "·"].map { "mem 127.9/128G \($0)" } + ["mem 확인 중"]
+        for (label, reading, expectedSensor) in cases {
+            let model = try await makeModel(reading)
+            let fromModel = PowerlineTexts(model: model)
+            XCTAssertEqual(fromModel.sensor, expectedSensor, "\(label): provider → 모델 → PowerlineTexts")
+            try assertUnchangedRendering(fromModel, expectedSensor: expectedSensor, naturalWidth: naturalWidth(fromModel),
+                                         label: "provider → PowerlineFooter/\(label)", model: model)
+            for memory in memories {
+                for disk in ["disk 1960G 남음", "disk 확인 중"] {
+                    let branch = "\(label)/\(memory)/\(disk)"
+                    // 센서 문구는 모델에서 온 그대로 두고, 기존 최대 길이의 다른 칸만 고정한다.
+                    var t = fromModel
+                    t.clk = "23:59:59"; t.mem = memory; t.disk = disk
+                    let w = naturalWidth(t)
+                    XCTAssertLessThanOrEqual(w, 684, "\(branch): 실제 footer 자연 폭 \(w)pt")
+                    try assertUnchangedRendering(t, expectedSensor: expectedSensor, naturalWidth: w, label: branch)
+                    if w > widest.width { widest = (branch, w) }
+                    combinations += 1
+                }
+            }
+            model.close()
+            print("FOOTER provider → model → render: \(label) = \(expectedSensor ?? "hidden") (literal Text pixels)")
         }
-        print("FOOTER matrix maximum = \(widest.width)pt (\(widest.label)), combinations = \(cases.count)")
-        print("FOOTER 684pt render comparisons = \(cases.count) (natural pixels, channel tolerance 1/255, transparent spacer, outside bounds)")
+        print("FOOTER matrix maximum = \(widest.width)pt (\(widest.label)), combinations = \(combinations)")
+        print("FOOTER 684pt render comparisons = \(combinations) (natural pixels, channel tolerance 1/255, transparent spacer, outside bounds)")
     }
 
-    func testFooterTextsContainNoBatCell() {
+    func testFooterTextsContainNoBatteryOrNetworkCell() {
         let suite = "com.mighty.notch-island.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -145,11 +231,14 @@ final class SensorFooterTests: XCTestCase {
         for t in [PowerlineTexts(model: model), texts(sensor: widestSensor)] {
             let strings = Mirror(reflecting: t).children.compactMap { $0.value as? String }
             XCTAssertFalse(strings.joined(separator: " | ").contains("bat"), "실제 모델/최대폭 상태줄에 bat 칸이 없어야 한다")
+            XCTAssertFalse(Mirror(reflecting: t).children.contains { $0.label == "net" })
+            XCTAssertFalse(strings.joined().contains("↓"))
+            XCTAssertFalse(strings.joined().contains("↑"))
         }
     }
 
     func testTypicalCellsFitIn684WithTheSensorCell() {
-        let t = PowerlineTexts(clk: "09:46:12", mem: "mem 101.0/128G ◇", disk: "disk 800G 남음", net: "↓1.2M ↑0.4K", sensor: "70° 5.3k rpm")
+        let t = PowerlineTexts(clk: "09:46:12", mem: "mem 101.0/128G ◇", disk: "disk 800G 남음", sensor: "fan 63%")
         let w = naturalWidth(t)
         print("FOOTER natural width (typical, sensor on) = \(w)")
         XCTAssertLessThanOrEqual(w, 684)

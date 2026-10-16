@@ -3,7 +3,7 @@ import NotchIslandCore
 
 /// SMC 온도·팬 센서를 집계한다. **읽기 전용**, 키 열거는 첫 샘플에서 한 번만 한다(이후엔 필요한 키만 읽는다).
 /// 키의 의미는 공식 문서가 없고 부하 실험으로 추정한 것이라 개별 키가 아니라 평균·최대로만 쓴다:
-/// CPU = `Tp*` · GPU = `Tg*` · 배터리 = `TB0T` · 팬 = `F0Ac`…`F(FNum-1)Ac`.
+/// CPU = `Tp*` · GPU = `Tg*` · 배터리 = `TB0T` · 팬 = `F{i}Ac` / `F{i}Mx`.
 /// 수집 큐 한 곳에서만 부른다(스레드 안전하지 않다).
 public final class SMCSensorProvider: PrivateSensorProvider {
     public static let source = "SMC (비공개 · 키 의미 추정)"
@@ -16,6 +16,7 @@ public final class SMCSensorProvider: PrivateSensorProvider {
         var gpuKeys: [String]
         var batteryKey: String?
         var fanKeys: [String]
+        var fanMaxRPMs: [Double?]       // 시작 때 한 번만 읽는 하드웨어 상수
         var isEmpty: Bool { cpuKeys.isEmpty && gpuKeys.isEmpty && batteryKey == nil && fanKeys.isEmpty }
     }
 
@@ -59,7 +60,11 @@ public final class SMCSensorProvider: PrivateSensorProvider {
         if let n = smc.read("FNum").flatMap(SMCDecode.number), n >= 1 {
             fanKeys = (0..<Int(min(n, 8))).map { "F\($0)Ac" }
         }
-        let plan = Plan(cpuKeys: cpu, gpuKeys: gpu, batteryKey: battery, fanKeys: fanKeys)
+        let maxima = fanKeys.indices.map { i -> Double? in
+            guard let rpm = smc.read("F\(i)Mx").flatMap(SMCDecode.number), rpm > 0, Self.validRPM.contains(rpm) else { return nil }
+            return rpm
+        }
+        let plan = Plan(cpuKeys: cpu, gpuKeys: gpu, batteryKey: battery, fanKeys: fanKeys, fanMaxRPMs: maxima)
         return plan.isEmpty ? .unsupported("이 기기에서 쓸 수 있는 SMC 센서 키가 없음") : .ready(smc, plan)
     }
 
@@ -71,8 +76,13 @@ public final class SMCSensorProvider: PrivateSensorProvider {
         }
         func mean(_ xs: [Double]) -> Double? { xs.isEmpty ? nil : xs.reduce(0, +) / Double(xs.count) }
         let cpu = temps(plan.cpuKeys)
-        let fans = plan.fanKeys.compactMap { smc.read($0).flatMap(SMCDecode.number) }.filter { validRPM.contains($0) }
+        // 현재 RPM 을 버릴 때 최고 RPM 도 함께 버려 팬끼리 짝이 어긋나지 않게 한다.
+        let fans = plan.fanKeys.enumerated().compactMap { i, key -> (rpm: Double, maximum: Double?)? in
+            guard let rpm = smc.read(key).flatMap(SMCDecode.number), validRPM.contains(rpm) else { return nil }
+            return (rpm, plan.fanMaxRPMs[i])
+        }
         return SensorValues(cpuAverage: mean(cpu), cpuMax: cpu.max(), gpuAverage: mean(temps(plan.gpuKeys)),
-                            battery: plan.batteryKey.flatMap { temps([$0]).first }, fanRPMs: fans)
+                            battery: plan.batteryKey.flatMap { temps([$0]).first },
+                            fanRPMs: fans.map(\.rpm), fanMaxRPMs: fans.map(\.maximum))
     }
 }
