@@ -49,11 +49,15 @@ final class IslandModel: ObservableObject {
     let settings: SettingsStore
     let machine: IslandStateMachine
     private let collector = MetricsCollector()
+    private let localModelProvider: LocalModelProvider
+    private var localModelsTask: Task<Void, Never>?
+    private var collecting = false
     private var engine = EventEngine()
     private var cancellables: Set<AnyCancellable> = []
 
     @Published private(set) var phase: IslandPhase = .collapsed { didSet { if phase != oldValue { rebuildLayout() } } }
     @Published private(set) var snapshot = SystemSnapshot.empty(at: Date())
+    @Published private(set) var localModels: Reading<[LocalModelInfo]> = .checking(unit: "models", at: Date(), source: "loopback GET")
     @Published private(set) var history = MetricsHistory()
     @Published private(set) var event: HeadlineEvent?
     @Published private(set) var alertText = "" { didSet { if alertText != oldValue { pillTextWidth = Self.measureText(alertText); pillWidth = Self.pillWidth(forText: pillTextWidth) } } }
@@ -106,14 +110,16 @@ final class IslandModel: ObservableObject {
     /// 레이아웃·입력 판정이 바뀌면 컨트롤러가 알아야 한다(패널 입력 통과 여부)
     var onLayoutChange: (() -> Void)?
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore, localModelProvider: LocalModelProvider = LocalModelProvider()) {
         self.settings = settings
+        self.localModelProvider = localModelProvider
         self.machine = IslandStateMachine(scheduler: DispatchScheduler())
         machine.hoverEnabled = settings.hoverExpand
         machine.onPhaseChange = { [weak self] from, to in self?.phaseChanged(from: from, to: to) }
         if Self.traceOn { machine.trace = { [weak self] msg in self?.trace(msg) } }       // 꺼져 있으면 nil → 상태 머신이 문자열을 만들지 않는다
 
         settings.$hoverExpand.sink { [weak self] v in self?.machine.hoverEnabled = v }.store(in: &cancellables)
+        settings.$localModelEnabled.sink { [weak self] v in self?.refreshLocalModelMonitoring(enabled: v) }.store(in: &cancellables)
 
         collector.onSnapshot = { [weak self] snap, gap in
             DispatchQueue.main.async { self?.ingest(snap, afterGap: gap) }
@@ -132,8 +138,32 @@ final class IslandModel: ObservableObject {
     /// 검증용: 시스템 설정과 무관하게 움직임 줄이기를 강제한다 (--reduce-motion)
     func debugForceReduceMotion() { forceReduceMotion = true; refreshReduceMotion() }
 
-    func start() { collector.start() }
-    func stop() { collector.stop() }
+    func start() { collecting = true; collector.start(); refreshLocalModelMonitoring() }
+    func stop() { collecting = false; collector.stop(); refreshLocalModelMonitoring() }
+
+    private func refreshLocalModelMonitoring(enabled: Bool? = nil) {
+        guard collecting, phase.isOpen, enabled ?? settings.localModelEnabled else {
+            localModelsTask?.cancel(); localModelsTask = nil
+            return
+        }
+        guard localModelsTask == nil else { return }
+        localModels = .checking(unit: "models", at: Date(), source: "loopback GET")
+        let provider = localModelProvider
+        localModelsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let reading = await provider.sample()
+                guard !Task.isCancelled else { return }
+                // 이름·상태가 같으면 5초마다 카드 전체를 다시 그리지 않는다(조회 시각은 화면에 쓰지 않는다).
+                if self?.localModels.value != reading.value || self?.localModels.status != reading.status {
+                    self?.localModels = reading
+                }
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) }
+                catch { return }
+            }
+        }
+    }
+
+    deinit { localModelsTask?.cancel() }
 
     // MARK: 지오메트리 · 레이아웃
 
@@ -220,6 +250,7 @@ final class IslandModel: ObservableObject {
         refreshMemorySide()          // 접힘/펼침 폭이 다르니 균형 판정도 다시
         trace("phase \(from) → \(to)")
         collector.setExpanded(to.isOpen)
+        refreshLocalModelMonitoring()
         if from == .alert { endDrop(to: to) }
         onLayoutChange?()
     }

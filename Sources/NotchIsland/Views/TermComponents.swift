@@ -119,8 +119,9 @@ struct CellBar: View {
 /// CPU 1분 점 그래프(btop 식, 60열 × 16행). 오른쪽 끝이 가장 최근. 기록이 짧으면 왼쪽은 꺼진 점, 측정 못 한 구간(nil)도 꺼진 점으로 둔다(가짜 연속선 금지).
 struct DotGraph: View {
     let values: [Double?]
+    var width: CGFloat = 360
     static let cols = 60, rows = 16
-    static let width: CGFloat = 360, height: CGFloat = 76
+    static let height: CGFloat = 76
 
     var body: some View {
         let data = Array(values.suffix(Self.cols))
@@ -153,7 +154,7 @@ struct DotGraph: View {
             for (k, p) in body.enumerated() { ctx.fill(p, with: .color(TermStyle.fg3.opacity(0.55 + 0.45 * (Double(k) + 0.5) / 4))) }
             ctx.fill(topPath, with: .color(TermStyle.acc))
         }
-        .frame(width: Self.width, height: Self.height)
+        .frame(width: width, height: Self.height)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("CPU 최근 1분 추이")
     }

@@ -251,24 +251,26 @@ final class DiskBatteryTests: XCTestCase {
 // MARK: - 프로세스
 
 final class ProcessTests: XCTestCase {
-    func testTopUsageMathAggregatesByNameAndSkipsNewPids() {
+    func testTopUsageMathAggregatesMemoryAndIncludesNewPids() {
         let prev: [Int32: UInt64] = [1: 0, 2: 0, 3: 0]
         let cur = [
             ProcessSample(pid: 1, name: "App", cpuTimeNs: 2_000_000_000, residentBytes: 100),   // 2s/2s = 100%
             ProcessSample(pid: 2, name: "App", cpuTimeNs: 1_000_000_000, residentBytes: 50),    // +50%
             ProcessSample(pid: 3, name: "Other", cpuTimeNs: 200_000_000, residentBytes: 10),    // 10%
-            ProcessSample(pid: 9, name: "New", cpuTimeNs: 9_000_000_000, residentBytes: 1),     // 새 pid: 기준점만
+            ProcessSample(pid: 9, name: "New", cpuTimeNs: 9_000_000_000, residentBytes: 1),     // 새 pid: 메모리는 포함, CPU는 기준점만
         ]
         let top = ProcessMath.topUsage(prev: prev, cur: cur, dtSeconds: 2, limit: 5)
-        XCTAssertEqual(top.map(\.name), ["App", "Other"])
+        XCTAssertEqual(top.map(\.name), ["App", "Other", "New"])
+        XCTAssertEqual(top[2].cpuPercent, 0)
         XCTAssertEqual(top[0].cpuPercent, 150, accuracy: 1e-9)
         XCTAssertEqual(top[0].count, 2)
         XCTAssertEqual(top[0].residentBytes, 150)
     }
 
-    func testPidReuseWithSmallerCounterIsSkipped() {
+    func testPidReuseKeepsMemoryAndResetsCPU() {
         let top = ProcessMath.topUsage(prev: [1: 5_000_000_000], cur: [ProcessSample(pid: 1, name: "X", cpuTimeNs: 1, residentBytes: 1)], dtSeconds: 1, limit: 3)
-        XCTAssertTrue(top.isEmpty)
+        XCTAssertEqual(top.first?.residentBytes, 1)
+        XCTAssertEqual(top.first?.cpuPercent, 0)
     }
 
     /// 실제 libproc 값 검증(mach 시간 단위 변환 포함): 코어 하나를 도는 `yes` 가 ~100% 로 읽혀야 한다.
@@ -281,9 +283,9 @@ final class ProcessTests: XCTestCase {
         let p = ProcessProvider()
         _ = p.sample(now: Date())
         Thread.sleep(forTimeInterval: 1.5)
-        let r = p.sample(now: Date())
+        let r = p.sample(now: Date(), limit: Int.max)
         let list = try XCTUnwrap(r.value)
-        let yes = try XCTUnwrap(list.first { $0.name == "yes" }, "상위 5개에 yes 가 있어야 한다: \(list)")
+        let yes = try XCTUnwrap(list.first { $0.name == "yes" }, "전체 프로세스에 yes 가 있어야 한다: \(list)")
         XCTAssertGreaterThan(yes.cpuPercent, 60)
         XCTAssertLessThan(yes.cpuPercent, 130)
     }
@@ -306,11 +308,11 @@ final class HistoryAndSettingsTests: XCTestCase {
         let d = UserDefaults(suiteName: suite)!
         defer { d.removePersistentDomain(forName: suite) }
         let s = SettingsStore(defaults: d)
-        XCTAssertTrue(s.hoverExpand); XCTAssertTrue(s.alertsEnabled); XCTAssertFalse(s.localModelEnabled)
+        XCTAssertTrue(s.hoverExpand); XCTAssertTrue(s.alertsEnabled); XCTAssertTrue(s.localModelEnabled)
         XCTAssertEqual(d.integer(forKey: "settingsVersion"), SettingsStore.currentVersion)
-        s.hoverExpand = false; s.localModelEnabled = true
+        s.hoverExpand = false; s.localModelEnabled = false
         let again = SettingsStore(defaults: d)
-        XCTAssertFalse(again.hoverExpand); XCTAssertTrue(again.localModelEnabled)
+        XCTAssertFalse(again.hoverExpand); XCTAssertFalse(again.localModelEnabled)
     }
 
     /// v1 의 모드 값(귀여운·화려한·구 이름 포함)이 남아 있어도 읽히지 않고 지워진다 — 모드는 매트릭스 하나.
@@ -322,7 +324,7 @@ final class HistoryAndSettingsTests: XCTestCase {
             d.set(1, forKey: "settingsVersion"); d.set(old, forKey: "theme"); d.set(false, forKey: "hoverExpand")
             let s = SettingsStore(defaults: d)
             XCTAssertNil(d.object(forKey: "theme"), "\(old)")
-            XCTAssertEqual(d.integer(forKey: "settingsVersion"), 2)
+            XCTAssertEqual(d.integer(forKey: "settingsVersion"), SettingsStore.currentVersion)
             XCTAssertFalse(s.hoverExpand, "다른 설정은 보존")
         }
     }

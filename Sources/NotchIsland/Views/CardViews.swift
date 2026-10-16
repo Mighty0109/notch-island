@@ -175,21 +175,26 @@ struct JobLine: View {
 struct PaneGrid: View {
     @ObservedObject var model: IslandModel
     let t: Double
-    private static let w: CGFloat = 684, rightX: CGFloat = 404 + 12, rightW: CGFloat = 684 - 404 - 12
+    private static let w: CGFloat = 684
+    private static let dividerX: CGFloat = w / 2, leftW: CGFloat = dividerX - 12
+    private static let rightX: CGFloat = dividerX + 12
+    private static let rightW: CGFloat = w - rightX
+    private static let processNameChars = Int(rightW / CGFloat(RevealTiming.cellWidth)) - 19
+    private static let modelNameChars = Int(rightW / CGFloat(RevealTiming.cellWidth)) - 1
 
     var body: some View {
         let u = RevealTiming.ruleProgress(elapsed: t)
         ZStack(alignment: .topLeading) {
-            cpuPane.frame(width: 392, height: 116, alignment: .topLeading)
+            cpuPane.frame(width: Self.leftW, height: 116, alignment: .topLeading)
             procPane.frame(width: Self.rightW, height: 116, alignment: .topLeading).offset(x: Self.rightX)
-            corePane.frame(width: 392, height: 126, alignment: .topLeading).offset(y: 116)
+            corePane.frame(width: Self.leftW, height: 126, alignment: .topLeading).offset(y: 116)
             llmPane.frame(width: Self.rightW, height: 126, alignment: .topLeading).offset(x: Self.rightX, y: 116)
             logPane.frame(width: Self.w, height: 62, alignment: .topLeading).offset(y: 242)
             // 창틀: 0.2초에 그어진다
             ForEach([0, 116, 242], id: \.self) { y in
                 Rectangle().fill(TermStyle.rule).frame(width: Self.w * u, height: 1).offset(y: CGFloat(y))
             }
-            Rectangle().fill(TermStyle.rule).frame(width: 1, height: 242 * u).offset(x: 404)
+            Rectangle().fill(TermStyle.rule).frame(width: 1, height: 242 * u).offset(x: Self.dividerX)
         }
         .frame(width: Self.w, height: 304, alignment: .topLeading)
     }
@@ -210,13 +215,13 @@ struct PaneGrid: View {
         let cpu = model.snapshot.cpu.value
         return VStack(alignment: .leading, spacing: 0) {
             head("cpu · 최근 1분", order: Row.cpuHead, right: cpu.map { String(format: "%.0f%%", $0) } ?? "—")
-                .frame(width: 392 - 12)
+                .frame(width: Self.leftW - 12)
             HStack(alignment: .top, spacing: 6) {
                 VStack(alignment: .trailing, spacing: 0) {
                     Text("100"); Spacer(minLength: 0); Text("50"); Spacer(minLength: 0); Text("0")
                 }
                 .font(TermStyle.font(12)).foregroundColor(TermStyle.fg3).frame(width: 24, height: 76)
-                DotGraph(values: model.history.cpu.values)
+                DotGraph(values: model.history.cpu.values, width: Self.leftW - 30)
             }
             .padding(.top, 4)
         }
@@ -233,14 +238,17 @@ struct PaneGrid: View {
             return g >= 1 ? String(format: "%.1fG", g) : String(format: "%.0fM", Double(b) / 1_048_576)
         }
         return VStack(alignment: .leading, spacing: 0) {
-            head("top 5", dim: "cpu% · 코어 1개 = 100%", order: Row.procHead)
+            head("top 5", dim: "MEM↓ · CPU%", order: Row.procHead)
+                .help("읽을 수 있는 프로세스 기준 · 같은 이름의 RSS 메모리를 합산해 내림차순 · CPU는 코어 1개 = 100%")
             ForEach(0..<5, id: \.self) { i in
                 Group {
                     if i < list.count {
                         let p = list[i]
-                        TypedLine(segs: [TermSeg(lpad("×\(p.count)", 3) + "  ", TermStyle.fg3), TermSeg(rpad(String(p.name.prefix(16)), 16) + " ", TermStyle.fg),
-                                         TermSeg(lpad(String(format: "%.0f", p.cpuPercent), 5), TermStyle.acc), TermSeg(" " + lpad(mem(p.residentBytes), 6), TermStyle.fg)],
+                        let name = p.name.count > Self.processNameChars ? String(p.name.prefix(Self.processNameChars - 1)) + "…" : p.name
+                        TypedLine(segs: [TermSeg(lpad("×\(p.count)", 3) + "  ", TermStyle.fg3), TermSeg(rpad(name, Self.processNameChars) + " ", TermStyle.fg),
+                                         TermSeg(lpad(mem(p.residentBytes), 6), TermStyle.acc), TermSeg(" " + lpad(String(format: "%.0f", p.cpuPercent), 5), TermStyle.fg)],
                                   elapsed: e(Row.proc0 + i))
+                            .help("\(p.name) ×\(p.count) · RSS \(mem(p.residentBytes)) · CPU \(String(format: "%.0f", p.cpuPercent))% (코어 1개 = 100%)")
                     } else {
                         TypedLine(segs: [TermSeg(i == 0 ? "…" : "", TermStyle.fg3)], elapsed: e(Row.proc0 + i))
                     }
@@ -254,7 +262,9 @@ struct PaneGrid: View {
     // cores 18 — 3열 × 6행(세로로 채움). 번호만 표시(코어 번호↔종류 매핑은 공개 문서가 없다 — decisions D6)
     // 칸 막대 18개를 캔버스 하나에 그린다(막대마다 뷰를 두면 1초마다 18개를 다시 그려 펼침 고정 idle 이 올랐다 — 프로파일 3.3ms/s).
     // 글자는 줄마다 한 덩어리(이름 · 막대 자리 공백 · 퍼센트).
-    private static let cell = RevealTiming.cellWidth, colChars = 14, colPitch = 14 * RevealTiming.cellWidth + 18
+    private static let cell = RevealTiming.cellWidth, colChars = 12, coreColumnGap: CGFloat = 8
+    private static let colPitch = Double(colChars) * cell + Double(coreColumnGap)
+    private static let coreBarWidth: CGFloat = 3.8
 
     private var corePane: some View {
         let cores = model.lastCores
@@ -263,7 +273,7 @@ struct PaneGrid: View {
         let t = self.t
         return VStack(alignment: .leading, spacing: 0) {
             head("cores \(n)", dim: topo, order: Row.coreHead)
-            HStack(alignment: .top, spacing: 18) {
+            HStack(alignment: .top, spacing: Self.coreColumnGap) {
                 ForEach(0..<3, id: \.self) { col in
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(0..<6, id: \.self) { row in
@@ -281,8 +291,8 @@ struct PaneGrid: View {
                         let v = i < cores.count ? cores[i] : 0, on = i < cores.count ? Int((v * 6).rounded()) : 0
                         let x0 = CGFloat(col) * CGFloat(Self.colPitch) + CGFloat(4 * Self.cell), y0 = CGFloat(row) * 16 + 3.5
                         for k in 0..<6 {
-                            if px.isFinite, px < 4 * Self.cell + Double(k + 1) * 7.2 { break }       // 타이핑이 거기까지 안 왔다
-                            ctx.fill(Path(CGRect(x: x0 + CGFloat(k) * (CellBar.cellW + 1), y: y0, width: CellBar.cellW, height: CellBar.cellH)),
+                            if px.isFinite, px < 4 * Self.cell + Double(k + 1) * Double(Self.coreBarWidth + 1) { break }
+                            ctx.fill(Path(CGRect(x: x0 + CGFloat(k) * (Self.coreBarWidth + 1), y: y0, width: Self.coreBarWidth, height: CellBar.cellH)),
                                      with: .color(k < on ? TermStyle.acc : TermStyle.dim))
                         }
                     }
@@ -299,26 +309,42 @@ struct PaneGrid: View {
         let label = "c\(i)"
         let ready = i < cores.count
         let name = label + String(repeating: " ", count: 4 - label.count)
-        let gap = String(repeating: " ", count: 6)                    // 막대 자리(6칸 ≈ 막대 6.2×6+5)
+        let gap = String(repeating: " ", count: 4)                    // 6칸 막대(3.8×6+5 = 27.8pt)
         return TypedLine(segs: [TermSeg(name, TermStyle.fg3), TermSeg(gap, TermStyle.fg3),
                                 TermSeg(ready ? String(format: "%3.0f%%", cores[i] * 100) : " …", ready ? TermStyle.fg : TermStyle.fg3)], elapsed: el)
     }
 
-    // llm · ports — 실데이터는 v0.2(센서·포트). 가짜 값은 안 쓰고 자리만 정직하게 표시한다.
+    // 모델 이름만. 6줄을 유지해 데이터 도착 시 카드 높이가 변하지 않는다.
     private var llmPane: some View {
-        let lines: [[TermSeg]] = [
-            [TermSeg("llm   ", TermStyle.fg3), TermSeg(model.settings.localModelEnabled ? "켜짐 (v0.2 표시)" : "꺼짐", TermStyle.fg2)],
-            [TermSeg("gpu   ", TermStyle.fg3), TermSeg("n/a (v0.2 센서 모듈)", TermStyle.fg2)],
-            [TermSeg("power ", TermStyle.fg3), TermSeg("n/a (v0.2 센서 모듈)", TermStyle.fg2)],
-            [TermSeg("ports ", TermStyle.fg3), TermSeg("(v0.2 자리)", TermStyle.fg2)],
-        ]
+        let models = model.localModels.value ?? []
+        let visible = Array(models.prefix(models.count > 6 ? 5 : 6))
+        var lines: [[TermSeg]] = []
+        if !model.settings.localModelEnabled {
+            lines = [[TermSeg("표시 꺼짐 · 설정에서 켜기", TermStyle.fg3)]]
+        } else if models.isEmpty {
+            let message: String
+            switch model.localModels.status {
+            case .checking: message = "로컬 모델 확인 중…"
+            case .failed: message = "일부 서버 확인 실패"
+            default: message = "사용 중인 로컬 모델 없음"
+            }
+            lines = [[TermSeg(message, TermStyle.fg3)]]
+        } else {
+            for m in visible {
+                lines.append([TermSeg(m.shortName(maxCharacters: Self.modelNameChars), TermStyle.fg)])
+            }
+            if models.count > 6 { lines.append([TermSeg("+ \(models.count - visible.count)개 · 호버로 전체 보기", TermStyle.fg3)]) }
+        }
+        let tooltip = models.map { "\($0.name)\n\($0.detail)" }.joined(separator: "\n\n")
         return VStack(alignment: .leading, spacing: 0) {
-            head("llm · ports", order: Row.llmHead)
+            head("local models", order: Row.llmHead)
             ForEach(0..<6, id: \.self) { i in
                 TypedLine(segs: i < lines.count ? lines[i] : [TermSeg("", TermStyle.fg2)], elapsed: e(Row.llm0 + i))
                     .frame(height: 16, alignment: .leading)
             }
         }
+        .help(tooltip.isEmpty ? "현재 로드된 로컬 모델 · 실행 중인 생성 작업의 본체 모델" : tooltip)
+        .accessibilityLabel(tooltip.isEmpty ? "로컬 모델" : tooltip)
         .padding(.top, 6)
     }
 

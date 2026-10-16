@@ -102,7 +102,7 @@ public final class MetricsCollector {
             battery: battery.sample(now: now),
             disk: lastDisk ?? .checking(unit: "bytes", at: now, source: "URLResourceValues"),
             network: network.sample(now: now),
-            topProcesses: expanded ? processes.sample(now: now) : .checking(unit: "%", at: now, source: "libproc"),
+            topProcesses: expanded ? processes.sample(now: now) : .checking(unit: "bytes", at: now, source: "libproc"),
             updatedAt: now)
     }
 }

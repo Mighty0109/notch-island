@@ -13,13 +13,14 @@ public struct ProcessSample: Equatable, Sendable {
 
 public enum ProcessMath {
     /// 두 시점의 누적 CPU 시간 차분 → 프로세스별 % (코어 1개 = 100%). 같은 이름은 합친다.
-    /// 이전 샘플에 없던 pid 는 기준점만(급등 방지). 누적 시간이 줄었으면(pid 재사용) 건너뜀.
+    /// 메모리 내림차순. 새 pid·재사용 pid·기준점 없는 샘플도 메모리는 포함하고 CPU만 0으로 둔다.
     public static func topUsage(prev: [Int32: UInt64], cur: [ProcessSample], dtSeconds: Double, limit: Int) -> [ProcessUsage] {
-        guard dtSeconds > 0 else { return [] }
         var byName: [String: (cpu: Double, rss: UInt64, n: Int)] = [:]
         for s in cur {
-            guard let before = prev[s.pid], s.cpuTimeNs >= before else { continue }
-            let pct = Double(s.cpuTimeNs - before) / 1_000_000_000 / dtSeconds * 100
+            var pct = 0.0
+            if dtSeconds > 0, let before = prev[s.pid], s.cpuTimeNs >= before {
+                pct = Double(s.cpuTimeNs - before) / 1_000_000_000 / dtSeconds * 100
+            }
             var e = byName[s.name] ?? (0, 0, 0)
             e.cpu += pct; e.rss += s.residentBytes; e.n += 1
             byName[s.name] = e
@@ -29,10 +30,10 @@ public enum ProcessMath {
             list.append(ProcessUsage(name: name, cpuPercent: e.cpu, residentBytes: e.rss, count: e.n))
         }
         list.sort { (a: ProcessUsage, b: ProcessUsage) -> Bool in
-            if a.cpuPercent != b.cpuPercent { return a.cpuPercent > b.cpuPercent }
+            if a.residentBytes != b.residentBytes { return a.residentBytes > b.residentBytes }
             return a.name < b.name
         }
-        return Array(list.prefix(limit))
+        return Array(list.prefix(max(0, limit)))
     }
 }
 
@@ -87,13 +88,12 @@ public final class ProcessProvider {
         let src = "libproc(읽을 수 있는 프로세스만)"
         guard let all = source.readAll() else {
             reset()
-            return .failed("읽기 실패", unit: "%", at: now, source: src)
+            return .failed("읽기 실패", unit: "bytes", at: now, source: src)
         }
         let table = Dictionary(all.map { ($0.pid, $0.cpuTimeNs) }, uniquingKeysWith: { a, _ in a })
         defer { prev = table; prevNs = nowNs }
-        guard let p = prev, let pn = prevNs, nowNs > pn else { return .checking(unit: "%", at: now, source: src) }
-        let dt = Double(nowNs - pn) / 1_000_000_000
-        guard dt <= maxGapSeconds else { return .checking(unit: "%", at: now, source: src) }
-        return .ok(ProcessMath.topUsage(prev: p, cur: all, dtSeconds: dt, limit: limit), unit: "%", at: now, source: src)
+        let elapsed = prevNs.map { nowNs > $0 ? Double(nowNs - $0) / 1_000_000_000 : 0 } ?? 0
+        let dt = elapsed <= maxGapSeconds ? elapsed : 0
+        return .ok(ProcessMath.topUsage(prev: prev ?? [:], cur: all, dtSeconds: dt, limit: limit), unit: "bytes", at: now, source: src)
     }
 }

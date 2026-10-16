@@ -4,13 +4,67 @@ import XCTest
 final class LocalModelTests: XCTestCase {
     private func data(_ json: String) -> Data { Data(json.utf8) }
 
-    func testServerModelsPreserveFullIDAndDeduplicate() throws {
+    func testLoadedServerModelsPreserveFullIDAndDeduplicate() throws {
         let e = LocalModelEndpoint(engine: "MLX", port: 11234, format: .openAI)
-        let models = try LocalModelProvider.decode(data(#"{"data":[{"id":"org/Qwen-Flash-4bit"},{"id":"org/Qwen-Flash-4bit"},{"id":""}]}"#), endpoint: e)
+        let models = try LocalModelProvider.decode(data(#"{"data":[{"id":"org/Qwen-Flash-4bit","loaded":true},{"id":"org/Qwen-Flash-4bit","loaded":true},{"id":"","loaded":true},{"id":"cached-model","loaded":false},{"id":"unknown-model"}]}"#), endpoint: e)
         XCTAssertEqual(models.count, 1)
         XCTAssertEqual(models[0].name, "org/Qwen-Flash-4bit")
         XCTAssertEqual(models[0].displayName, "Qwen-Flash")
-        XCTAssertEqual(models[0].detail, "MLX 4bit :11234 · 제공")
+        XCTAssertEqual(models[0].detail, "MLX 4bit :11234 · 로드됨")
+    }
+
+    func testCachedOpenAIModelsAreNeverAssumedLoaded() throws {
+        let e = LocalModelEndpoint(engine: "MLX", port: 8081, format: .openAI)
+        let json = #"{"data":[{"id":"LiquidAI/LFM2.5-VL-3B-MLX-4bit"},{"id":"krea/Krea-2-Turbo"},{"id":"aac6fef/laya-multilingual-mlx"},{"id":"loading","loaded":false,"state":"loading"}]}"#
+        XCTAssertTrue(try LocalModelProvider.decode(data(json), endpoint: e).isEmpty)
+    }
+
+    func testVisionHealthReadsOnlyLoadedModelsAndDeduplicatesKinds() throws {
+        let e = LocalModelEndpoint.defaults.first { $0.port == 8080 }!
+        XCTAssertEqual(e.url.path, "/health")
+        let json = #"{"status":"healthy","loaded_model":"LiquidAI/LFM2.5-VL-3B-MLX-4bit","loaded_models":{"text_generation":{"model":"LiquidAI/LFM2.5-VL-3B-MLX-4bit","adapter":"style"},"speech":{"model":"mlx-community/VoxCPM2-8bit"},"embedding":{"model":null}},"data":[{"id":"krea/Krea-2-Turbo"}]}"#
+        let models = try LocalModelProvider.decode(data(json), endpoint: e)
+        XCTAssertEqual(models.map(\.name), ["LiquidAI/LFM2.5-VL-3B-MLX-4bit", "mlx-community/VoxCPM2-8bit"])
+        XCTAssertTrue(models.allSatisfy { $0.activity == "로드됨" })
+        XCTAssertTrue(try LocalModelProvider.decode(data(#"{"status":"healthy","loaded_model":null,"loaded_models":{}}"#), endpoint: e).isEmpty)
+        let legacy = try LocalModelProvider.decode(data(#"{"loaded_model":"org/one-model"}"#), endpoint: e)
+        XCTAssertEqual(legacy.map(\.name), ["org/one-model"])
+        for invalid in [#"{"status":"healthy"}"#, #"{"loaded_model":123}"#, #"{"loaded_models":[]}"#] {
+            XCTAssertThrowsError(try LocalModelProvider.decode(data(invalid), endpoint: e))
+        }
+    }
+
+    func testDS4AliasesResolveToActualLoadedEngineName() throws {
+        let e = LocalModelEndpoint(engine: "DS4", port: 8000, format: .openAI)
+        let json = #"{"data":[{"id":"deepseek-v4-flash","owned_by":"ds4.c","name":"DeepSeek-V4-Flash"},{"id":"deepseek-v4-pro","owned_by":"ds4.c","name":"DeepSeek-V4-Flash"},{"id":"unverified"}]}"#
+        XCTAssertEqual(try LocalModelProvider.decode(data(json), endpoint: e).map(\.name), ["DeepSeek-V4-Flash"])
+    }
+
+    private actor VisionHealthHTTP: LocalModelHTTPSource {
+        private(set) var paths: [String] = []
+        var loaded = true
+        func unload() { loaded = false }
+        func get(_ url: URL) async throws -> Data? {
+            paths.append(url.path)
+            if url.path == "/health" {
+                return Data((loaded ? #"{"loaded_model":"org/active-model"}"# : #"{"loaded_model":null}"#).utf8)
+            }
+            return Data(#"{"data":[{"id":"cached-model"}]}"#.utf8)
+        }
+    }
+
+    func testVisionSampleRemovesUnloadedModelWithoutFallingBackToCatalog() async {
+        let http = VisionHealthHTTP()
+        let endpoint = LocalModelEndpoint.defaults.first { $0.port == 8080 }!
+        let provider = LocalModelProvider(source: http, endpoints: [endpoint], processes: NoLocalModelProcesses())
+        let loaded = await provider.sample()
+        XCTAssertEqual(loaded.value?.map(\.name), ["org/active-model"])
+        await http.unload()
+        let unloaded = await provider.sample()
+        XCTAssertEqual(unloaded.status, .ok)
+        XCTAssertEqual(unloaded.value, [])
+        let paths = await http.paths
+        XCTAssertEqual(paths, ["/health", "/health"])
     }
 
     func testOllamaUsesLoadedModelsEndpoint() throws {
@@ -174,9 +228,56 @@ final class LocalModelTests: XCTestCase {
         XCTAssertEqual(r.value?.map(\.name), ["VoxCPM2-8bit"])
     }
 
+    // MARK: 포트 없는 이미지·영상 생성 스크립트
+
+    private static let minimaxArgv = [
+        "/opt/homebrew/Cellar/python@3.12/3.12.8/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+        "/Users/mighty/Code/minimax-h3-mlx/scripts/generate.py", "Hand-drawn anime fox running",
+        "-o", "/Users/mighty/ComfyUI-Shared/output/fox.mp4",
+        "-t", "/Users/mighty/Code/minimax-h3-mlx/models/MiniMax-H3-MLX-8bit",
+    ]
+
+    func testMiniMaxGeneratorArgvIsDetected() {
+        let m = LocalModelProcessParser.generatorModel(argv: Self.minimaxArgv)
+        XCTAssertEqual(m, LocalModelInfo(name: "MiniMax-H3", engine: "MLX", port: 0, activity: "생성 중"))
+        XCTAssertNil(LocalModelProcessParser.audioModel(argv: Self.minimaxArgv))
+    }
+
+    func testMfluxAndIrisGeneratorArgvAreDetected() {
+        let mflux = LocalModelProcessParser.generatorModel(argv: ["/usr/bin/python3", "/Users/mighty/.venv/bin/mflux-generate", "--prompt", "cat"])
+        XCTAssertEqual(mflux?.name, "mflux")
+        XCTAssertEqual(mflux?.engine, "MLX")
+        XCTAssertEqual(mflux?.port, 0)
+        XCTAssertEqual(mflux?.activity, "생성 중")
+        let iris = LocalModelProcessParser.generatorModel(argv: ["python", "/Users/mighty/Code/iris-3b-turbo/scripts/sample.py", "--prompt", "cat"])
+        XCTAssertEqual(iris?.name, "Iris-3B")
+        XCTAssertEqual(iris?.engine, "Torch")
+        XCTAssertEqual(iris?.port, 0)
+        XCTAssertEqual(iris?.activity, "생성 중")
+    }
+
+    func testUnrelatedPythonIsNotGenerator() {
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: ["python3", "-m", "http.server"]))
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: []))
+        // 프롬프트에만 스크립트 이름이 섞인 경우
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: ["python3", "/Users/mighty/Code/other/run.py", "explain generate.py and sample.py in minimax-h3-mlx and iris-3b-turbo"]))
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: ["python3", "/Users/mighty/Code/other/run.py", "about generate.py in minimax-h3-mlx scripts/generate.py now"]))
+        // 다른 프로젝트의 generate.py / sample.py
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: ["python3", "/Users/mighty/Code/other/scripts/generate.py"]))
+        XCTAssertNil(LocalModelProcessParser.generatorModel(argv: ["python3", "/Users/mighty/Code/other/sample.py"]))
+    }
+
+    func testSampleCollectsGeneratorsAlongsideAudio() async {
+        let p = LocalModelProvider(source: StubHTTP(), processes: FakeProcesses(argvs: [Self.voxArgv, Self.minimaxArgv, Self.minimaxArgv, ["python3", "-m", "http.server"]]))
+        let r = await p.sample()
+        XCTAssertEqual(r.status, .ok)
+        XCTAssertEqual(Set(r.value?.map(\.name) ?? []), ["VoxCPM2-8bit", "MiniMax-H3"])
+        XCTAssertEqual(r.value?.count, 2)
+    }
+
     private struct ServerHTTP: LocalModelHTTPSource {
         func get(_ url: URL) async throws -> Data? {
-            url.port == 11234 ? Data(#"{"data":[{"id":"org/Test-Model"}]}"#.utf8) : nil
+            url.port == 11234 ? Data(#"{"data":[{"id":"org/Test-Model","loaded":true}]}"#.utf8) : nil
         }
     }
 

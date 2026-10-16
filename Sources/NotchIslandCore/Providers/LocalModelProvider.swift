@@ -62,7 +62,7 @@ public struct LocalModelInfo: Equatable, Sendable {
 }
 
 public struct LocalModelEndpoint: Sendable {
-    public enum Format: Sendable { case openAI, ollama, comfyQueue }
+    public enum Format: Sendable { case openAI, mlxHealth, ollama, comfyQueue }
     public var engine: String
     public var port: Int
     public var format: Format
@@ -73,6 +73,7 @@ public struct LocalModelEndpoint: Sendable {
         let path: String
         switch format {
         case .openAI: path = "/v1/models"
+        case .mlxHealth: path = "/health"
         case .ollama: path = "/api/ps"
         case .comfyQueue: path = "/queue"
         }
@@ -81,7 +82,7 @@ public struct LocalModelEndpoint: Sendable {
     public static let defaults: [Self] = [
         .init(engine: "MLX", port: 11234, format: .openAI),
         .init(engine: "DS4", port: 8000, format: .openAI),
-        .init(engine: "LFM", port: 8080, format: .openAI),
+        .init(engine: "LFM", port: 8080, format: .mlxHealth),
         .init(engine: "MLX", port: 8081, format: .openAI),
         .init(engine: "Ollama", port: 11434, format: .ollama),
         .init(engine: "ComfyUI", port: 8188, format: .comfyQueue),
@@ -217,6 +218,24 @@ public enum LocalModelProcessParser {
         return LocalModelInfo(name: name, engine: "TTS", port: 0, activity: "실행 중")
     }
 
+    /// 포트 없는 이미지·영상 생성 스크립트(정해진 목록만). 목록 밖 python 은 nil.
+    /// 프롬프트·출력 경로에 단어가 섞여도 잡히지 않도록 스크립트 판정은 hasSuffix 로 한다.
+    public static func generatorModel(argv: [String]) -> LocalModelInfo? {
+        func info(_ name: String, _ engine: String) -> LocalModelInfo {
+            LocalModelInfo(name: name, engine: engine, port: 0, activity: "생성 중")
+        }
+        if argv.contains(where: { $0.contains("minimax-h3-mlx") && $0.hasSuffix("generate.py") }) {
+            return info("MiniMax-H3", "MLX")
+        }
+        if argv.contains(where: { $0.split(separator: "/").last?.hasPrefix("mflux-") == true }) {
+            return info("mflux", "MLX")
+        }
+        if argv.contains(where: { $0.contains("iris-3b-turbo") && $0.hasSuffix("sample.py") }) {
+            return info("Iris-3B", "Torch")
+        }
+        return nil
+    }
+
     /// HF 캐시 `.../models--<org>--<name>/snapshots/<hash>` 면 `<name>`, 아니면 경로의 마지막 의미 있는 조각.
     static func modelName(fromPath path: String) -> String? {
         let parts = path.split(separator: "/").map(String.init)
@@ -234,7 +253,7 @@ public enum LocalModelProcessParser {
     }
 }
 
-/// 모델 로드·생성 없이 목록/실행 큐만 읽는다. 호출 주기는 화면 모델이 펼침 동안 5초로 제한한다.
+/// 모델 로드·생성 없이 로드 상태/실행 큐만 읽는다. 호출 주기는 화면 모델이 펼침 동안 5초로 제한한다.
 public struct LocalModelProvider: Sendable {
     private let source: any LocalModelHTTPSource
     private let endpoints: [LocalModelEndpoint]
@@ -257,8 +276,9 @@ public struct LocalModelProvider: Sendable {
             // 포트 없는 프로세스: 읽기 실패는 조용히 건너뛰므로 실패 플래그는 항상 false.
             group.addTask {
                 var seen = Set<String>()
-                let infos = processes.candidateArguments().compactMap(LocalModelProcessParser.audioModel(argv:))
-                    .filter { seen.insert($0.name).inserted }
+                let infos = processes.candidateArguments().flatMap { argv in
+                    [LocalModelProcessParser.audioModel(argv: argv), LocalModelProcessParser.generatorModel(argv: argv)].compactMap { $0 }
+                }.filter { seen.insert($0.name).inserted }
                 return (infos, false)
             }
             var results: [([LocalModelInfo], Bool)] = []
@@ -281,7 +301,34 @@ public struct LocalModelProvider: Sendable {
         switch endpoint.format {
         case .openAI:
             guard let items = root["data"] as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
-            names = items.compactMap { $0["id"] as? String }; activity = "제공"
+            names = items.compactMap { item in
+                // OpenAI 모델 목록은 디스크 캐시/등록 목록일 수도 있다. 로드 증거 없는 ID는 제외한다.
+                if let loaded = item["loaded"] as? Bool {
+                    return loaded ? item["id"] as? String : nil
+                }
+                // ds4.c는 단일 로드 엔진을 여러 API 별칭으로 반환한다. 실제 엔진 이름으로 합친다.
+                if endpoint.engine == "DS4", item["owned_by"] as? String == "ds4.c" {
+                    return item["name"] as? String
+                }
+                return nil
+            }
+            activity = "로드됨"
+        case .mlxHealth:
+            // mlx_vlm /v1/models는 HF 캐시 전체를 반환하므로 /health의 실제 모델 캐시만 읽는다.
+            guard root.keys.contains("loaded_model") || root.keys.contains("loaded_models") else {
+                throw URLError(.cannotParseResponse)
+            }
+            func appendModel(_ value: Any?) throws {
+                guard let value, !(value is NSNull) else { return }
+                guard let name = value as? String else { throw URLError(.cannotParseResponse) }
+                names.append(name)
+            }
+            try appendModel(root["loaded_model"])
+            if let value = root["loaded_models"] {
+                guard let caches = value as? [String: [String: Any]] else { throw URLError(.cannotParseResponse) }
+                for cache in caches.values { try appendModel(cache["model"]) }
+            }
+            activity = "로드됨"
         case .ollama:
             guard let items = root["models"] as? [[String: Any]] else { throw URLError(.cannotParseResponse) }
             names = items.compactMap { ($0["name"] ?? $0["model"]) as? String }; activity = "로드됨"

@@ -144,7 +144,7 @@ public struct SystemSnapshot: Equatable, Sendable {
             battery: .checking(unit: "%", at: now, source: "IOPowerSources"),
             disk: .checking(unit: "bytes", at: now, source: "URLResourceValues"),
             network: .checking(unit: "B/s", at: now, source: "getifaddrs"),
-            topProcesses: .checking(unit: "%", at: now, source: "libproc"),
+            topProcesses: .checking(unit: "bytes", at: now, source: "libproc"),
             updatedAt: now
         )
     }

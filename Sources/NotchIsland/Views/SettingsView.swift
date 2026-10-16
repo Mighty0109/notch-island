@@ -11,8 +11,8 @@ struct SettingsView: View {
                 Toggle("알림 켜기 (메모리 압박 · 열 상태 · 충전기 연결)", isOn: $settings.alertsEnabled)
             }
             Section("옵션") {
-                Toggle("로컬 모델 칸 (기본 꺼짐)", isOn: $settings.localModelEnabled)
-                Text("v0.1 은 켜고 끄는 토글만 있습니다. 모델 목록 표시는 v0.2 에서 붙습니다.")
+                Toggle("로컬 모델 이름 표시", isOn: $settings.localModelEnabled)
+                Text("펼침 동안 5초마다 로컬 서버 목록과 ComfyUI 실행 큐를 확인합니다. 모델 이름과 엔진·포트를 표시합니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
