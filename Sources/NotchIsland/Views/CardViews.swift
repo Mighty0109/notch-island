@@ -7,15 +7,6 @@ struct CardHeightKey: PreferenceKey {
 }
 
 extension IslandModel {
-    var batteryText: String {
-        switch snapshot.battery.status {
-        case .ok:
-            guard let b = snapshot.battery.value else { return "bat 확인 중" }
-            return "bat \(b.percent)% " + (b.isCharging ? "충전 중" : (b.onACPower ? "전원" : "방전"))
-        case .unsupported: return "bat 없음"
-        default: return "bat 확인 중"
-        }
-    }
     /// `mem 93.0/128G ◇` — 활성 상태 보기 "사용된 메모리"(앱+와이어드+압축) / 물리 메모리 + 압박 모양
     var memoryUsedText: String {
         guard let u = snapshot.memoryUsage.value else { return "mem 확인 중" }
@@ -372,43 +363,62 @@ struct PaneGrid: View {
     }
 }
 
-// MARK: - Powerline 상태줄 (시각 ▸ 메모리 ▸ 디스크·네트·배터리 ◂ 활성 상태 보기)
+// MARK: - Powerline 상태줄 (시각 ▸ 메모리 ▸ 디스크·네트·온도·팬 ◂ 활성 상태 보기)
+
+/// 상태줄 칸 문구 묶음. 센서 칸은 nil 이면 숨긴다.
+struct PowerlineTexts: Equatable {
+    var clk: String, mem: String, disk: String, net: String, sensor: String?
+    @MainActor init(model: IslandModel) {
+        clk = model.clockText; mem = model.memoryUsedText; disk = model.diskText; net = model.netText
+        sensor = model.sensorText
+    }
+    init(clk: String, mem: String, disk: String, net: String, sensor: String?) {
+        self.clk = clk; self.mem = mem; self.disk = disk; self.net = net; self.sensor = sensor
+    }
+}
 
 struct PowerlineFooter: View {
     @ObservedObject var model: IslandModel
     let e: Double
 
     var body: some View {
+        Self.row(PowerlineTexts(model: model), sensorHelp: model.sensorHelp, e: e)
+            .frame(width: 684, height: 24)
+            .modifier(RevealMask(elapsed: e, xStart: 0))
+    }
+
+    /// 폭 고정(684pt) 전의 줄. 칸 + `Spacer` + 오른쪽 버튼 — 자연 폭이 684 를 넘으면 버튼과 겹친다(테스트가 단언).
+    static func row(_ t: PowerlineTexts, sensorHelp: String, e: Double) -> some View {
         // 각 칸의 시작 위치(pt)를 글자 수로 어림해 줄 전체 타이핑 속도에 맞춘다
         let cell = RevealTiming.cellWidth
         let after = { (x: Double) -> Double in e - x / (RevealTiming.cardCharsPerSecond * cell) }
-        let clk = model.clockText, mem = model.memoryUsedText, disk = model.diskText, net = model.netText, bat = model.batteryText
-        let xMem = Double(clk.count) * cell + 18 + 8
-        let xDisk = xMem + Double(mem.count) * cell + 18 + 8
-        let xNet = xDisk + Double(disk.count) * cell + 18
-        let xBat = xNet + Double(net.count) * cell + 18
-        HStack(spacing: 0) {
-            seg(clk, TermStyle.fg, TermStyle.segA, after(0))
+        let xMem = Double(t.clk.count) * cell + 18 + 8
+        let xDisk = xMem + Double(t.mem.count) * cell + 18 + 8
+        let xNet = xDisk + Double(t.disk.count) * cell + 18
+        let xSensor = xNet + Double(t.net.count) * cell + 18
+        return HStack(spacing: 0) {
+            seg(t.clk, TermStyle.fg, TermStyle.segA, after(0))
             ChevronShape(pointsRight: true).fill(TermStyle.segA).frame(width: 8, height: 24).background(TermStyle.segB)
-            seg(mem, TermStyle.fg, TermStyle.segB, after(xMem))
+            seg(t.mem, TermStyle.fg, TermStyle.segB, after(xMem))
             ChevronShape(pointsRight: true).fill(TermStyle.segB).frame(width: 8, height: 24).background(TermStyle.segC)
-            seg(disk, TermStyle.fg2, TermStyle.segC, after(xDisk))
-            seg(net, TermStyle.fg2, TermStyle.segC, after(xNet))
-            seg(bat, TermStyle.fg2, TermStyle.segC, after(xBat))
+            seg(t.disk, TermStyle.fg2, TermStyle.segC, after(xDisk))
+            seg(t.net, TermStyle.fg2, TermStyle.segC, after(xNet))
+            if let sensor = t.sensor {
+                seg(sensor, TermStyle.fg2, TermStyle.segC, after(xSensor)).help(sensorHelp)
+            }
             Spacer(minLength: 0)
             ChevronShape(pointsRight: false).fill(TermStyle.segC).frame(width: 8, height: 24)
             Button { ActionService.openActivityMonitor() } label: {
-                TypedLine(segs: [TermSeg("활성 상태 보기 열기", TermStyle.fg, .semibold)], elapsed: e - 0.19)
+                // 여백·단위를 복원한 최대 조합이 684pt 안에 들도록 버튼 문구만 줄인다.
+                TypedLine(segs: [TermSeg("활성 상태 보기", TermStyle.fg, .semibold)], elapsed: e - 0.19)
                     .padding(.horizontal, 12).frame(height: 24).background(TermStyle.segA)
             }
             .buttonStyle(.plain)
             .accessibilityHint("활성 상태 보기 앱을 엽니다")
         }
-        .frame(width: 684, height: 24)
-        .modifier(RevealMask(elapsed: e, xStart: 0))
     }
 
-    private func seg(_ text: String, _ fg: Color, _ bg: Color, _ el: Double) -> some View {
+    private static func seg(_ text: String, _ fg: Color, _ bg: Color, _ el: Double) -> some View {
         TypedLine(segs: [TermSeg(text, fg)], elapsed: el).padding(.horizontal, 8).frame(height: 24).background(bg)
     }
 }

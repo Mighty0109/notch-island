@@ -11,16 +11,28 @@ let package = Package(
     targets: [
         // UI 를 모르는 코어: 수집기 · 이벤트 판정 · 상태 머신 · 설정. 스토어 대비로 센서 모듈은 프로토콜만.
         .target(name: "NotchIslandCore", path: "Sources/NotchIslandCore"),
+        // 비공개 센서(AppleSMC 온도·팬, 읽기 전용). 스토어 빌드는 이 타깃을 링크하지 않는다 — 코어는 프로토콜만 안다.
+        .target(
+            name: "NotchIslandSensors",
+            dependencies: ["NotchIslandCore"],
+            path: "Sources/NotchIslandSensors",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
         // 표시 + 동작 서비스(AppKit/SwiftUI).
         .executableTarget(
             name: "NotchIsland",
-            dependencies: ["NotchIslandCore"],
+            dependencies: ["NotchIslandCore", "NotchIslandSensors"],
             path: "Sources/NotchIsland"
         ),
         .testTarget(
             name: "NotchIslandCoreTests",
             dependencies: ["NotchIslandCore"],
             path: "Tests/NotchIslandCoreTests"
+        ),
+        .testTarget(
+            name: "NotchIslandSensorsTests",
+            dependencies: ["NotchIslandSensors", "NotchIslandCore"],
+            path: "Tests/NotchIslandSensorsTests"
         ),
         // 앱 쪽(모델 · 그리기) 성능 회귀 테스트. 실행 타깃을 @testable 로 가져온다.
         .testTarget(

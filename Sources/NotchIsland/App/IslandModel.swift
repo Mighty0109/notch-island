@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 import NotchIslandCore
+import NotchIslandSensors
 
 /// 선언 순서 = 카드 3칸 순서 (CPU · 메모리 · 열)
 enum SlotKind: CaseIterable { case cpu, memory, thermal }
@@ -48,7 +49,7 @@ struct SlotDisplay: Equatable {
 final class IslandModel: ObservableObject {
     let settings: SettingsStore
     let machine: IslandStateMachine
-    private let collector = MetricsCollector()
+    private let collector: MetricsCollector
     private let localModelProvider: LocalModelProvider
     private var localModelsTask: Task<Void, Never>?
     private var collecting = false
@@ -110,8 +111,10 @@ final class IslandModel: ObservableObject {
     /// 레이아웃·입력 판정이 바뀌면 컨트롤러가 알아야 한다(패널 입력 통과 여부)
     var onLayoutChange: (() -> Void)?
 
-    init(settings: SettingsStore, localModelProvider: LocalModelProvider = LocalModelProvider()) {
+    init(settings: SettingsStore, localModelProvider: LocalModelProvider = LocalModelProvider(),
+         sensors: PrivateSensorProvider? = SMCSensorProvider()) {
         self.settings = settings
+        self.collector = MetricsCollector(sensors: sensors)
         self.localModelProvider = localModelProvider
         self.machine = IslandStateMachine(scheduler: DispatchScheduler())
         machine.hoverEnabled = settings.hoverExpand
@@ -550,5 +553,36 @@ final class IslandModel: ObservableObject {
         if (snapshot.thermal.value?.rawValue ?? 0) >= 1 { return ("열 상태 \(snapshot.thermal.value?.label ?? "") · 지켜보는 중", 1) }
         if (snapshot.memory.value?.rawValue ?? 0) >= 1 { return ("메모리 압박 \(snapshot.memory.value?.label ?? "") · 지켜보는 중", 1) }
         return ("현재 주의할 사항 없음", 0)
+    }
+}
+
+// MARK: - 상태줄 센서 칸 (SMC 온도·팬)
+
+extension IslandModel {
+    /// 상태줄 칸 문구. nil 이면 칸을 숨긴다(이 맥이 SMC 센서를 못 읽는 경우).
+    var sensorText: String? { Self.sensorText(snapshot.sensors) }
+    var sensorHelp: String { Self.sensorHelp(snapshot.sensors) }
+
+    /// `70° 5.3k rpm` — CPU 평균 °C + 가장 빠른 팬. 팬이 전부 0 이면 `70° fan 정지`, 팬이 없는 기기는 `70°` 만.
+    static func sensorText(_ r: Reading<SensorValues>) -> String? {
+        switch r.status {
+        case .unsupported: return nil
+        case .ok:
+            guard let v = r.value else { return "temp 확인 중" }
+            let temp = v.cpuAverage.map { String(format: "%.0f°", $0) } ?? "—°"
+            guard let fastest = v.fanRPMs.max() else { return temp }
+            if fastest <= 0 { return temp + " fan 정지" }
+            return temp + String(format: " %.1fk rpm", fastest / 1000)
+        default: return "temp 확인 중"
+        }
+    }
+
+    /// 칸 호버 설명(`.help`): CPU 평균/최대 · GPU 평균 · 팬별 RPM · 배터리 °C · 출처.
+    static func sensorHelp(_ r: Reading<SensorValues>) -> String {
+        guard r.isOK, let v = r.value else { return "온도·팬 확인 중\n출처: \(SMCSensorProvider.source)" }
+        func deg(_ x: Double?) -> String { x.map { String(format: "%.0f°C", $0) } ?? "—" }
+        let fans = v.fanRPMs.isEmpty ? "—" : v.fanRPMs.enumerated().map { "팬\($0.offset + 1) \(Int($0.element.rounded())) rpm" }.joined(separator: " · ")
+        return ["CPU 평균 \(deg(v.cpuAverage)) · 최대 \(deg(v.cpuMax))", "GPU 평균 \(deg(v.gpuAverage))", fans,
+                "배터리 \(deg(v.battery))", "출처: \(SMCSensorProvider.source)"].joined(separator: "\n")
     }
 }

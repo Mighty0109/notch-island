@@ -5,6 +5,8 @@ public final class MetricsCollector {
     public static let collapsedInterval: TimeInterval = 2
     public static let expandedInterval: TimeInterval = 1
     public static let diskInterval: TimeInterval = 30
+    /// 비공개 센서(SMC)는 펼침 동안만, 이 간격 이상 띄워서 읽는다.
+    public static let sensorInterval: TimeInterval = 2
 
     /// 수집 큐에서 호출된다. `afterGap` 은 잠자기 복귀 등으로 시간축이 끊긴 직후의 첫 스냅샷.
     public var onSnapshot: ((_ snapshot: SystemSnapshot, _ afterGap: Bool) -> Void)?
@@ -21,7 +23,10 @@ public final class MetricsCollector {
     private let disk: DiskProvider
     private let network: NetworkProvider
     private let processes: ProcessProvider
+    private let sensors: PrivateSensorProvider?
 
+    private var lastSensors: Reading<SensorValues>?
+    private var lastSensorsAt: Date?
     private var lastDisk: Reading<DiskInfo>?
     private var lastDiskAt: Date?
     private var pendingGap = false
@@ -33,9 +38,11 @@ public final class MetricsCollector {
                 battery: BatteryProvider = BatteryProvider(),
                 disk: DiskProvider = DiskProvider(),
                 network: NetworkProvider = NetworkProvider(),
-                processes: ProcessProvider = ProcessProvider()) {
+                processes: ProcessProvider = ProcessProvider(),
+                sensors: PrivateSensorProvider? = nil) {
         self.cpu = cpu; self.thermal = thermal; self.pressure = pressure; self.memUsage = memUsage
         self.battery = battery; self.disk = disk; self.network = network; self.processes = processes
+        self.sensors = sensors
     }
 
     public func start() {
@@ -60,7 +67,12 @@ public final class MetricsCollector {
         queue.async { [self] in
             guard expanded != value else { return }
             expanded = value
-            if !value { processes.reset() }
+            if !value {
+                processes.reset()
+                // 접히면 센서 값은 버린다(오래된 온도를 보여주지 않게). 미지원 판정만 사실이라 남긴다.
+                if case .unsupported = lastSensors?.status {} else { lastSensors = nil }
+                // 조회 시각은 유지해 빠른 재펼침도 2초 제한을 지킨다.
+            }
             schedule(first: .now() + 0.05)
         }
     }
@@ -103,6 +115,19 @@ public final class MetricsCollector {
             disk: lastDisk ?? .checking(unit: "bytes", at: now, source: "URLResourceValues"),
             network: network.sample(now: now),
             topProcesses: expanded ? processes.sample(now: now) : .checking(unit: "bytes", at: now, source: "libproc"),
+            sensors: sampleSensors(now: now),
             updatedAt: now)
+    }
+
+    /// 펼침 동안만 SMC 를 읽고, 최대 `sensorInterval` 초에 한 번. 센서 모듈이 없으면 미지원.
+    private func sampleSensors(now: Date) -> Reading<SensorValues> {
+        guard let sensors else { return .unsupported("센서 모듈 없음", unit: "°C", at: now, source: "SMC") }
+        guard expanded else { return lastSensors ?? .checking(unit: "°C", at: now, source: "SMC") }
+        if let at = lastSensorsAt, now.timeIntervalSince(at) < Self.sensorInterval {
+            return lastSensors ?? .checking(unit: "°C", at: now, source: "SMC")
+        }
+        let r = sensors.sample(now: now)
+        lastSensors = r; lastSensorsAt = now
+        return r
     }
 }

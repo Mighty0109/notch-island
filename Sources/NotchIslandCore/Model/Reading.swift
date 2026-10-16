@@ -132,6 +132,7 @@ public struct SystemSnapshot: Equatable, Sendable {
     public var disk: Reading<DiskInfo>
     public var network: Reading<NetworkRate>
     public var topProcesses: Reading<[ProcessUsage]>
+    public var sensors: Reading<SensorValues>       // 비공개 센서(SMC) 집계. 센서 모듈이 없거나 접힘 동안은 checking/unsupported
     public var updatedAt: Date
 
     public static func empty(at now: Date) -> SystemSnapshot {
@@ -145,14 +146,26 @@ public struct SystemSnapshot: Equatable, Sendable {
             disk: .checking(unit: "bytes", at: now, source: "URLResourceValues"),
             network: .checking(unit: "B/s", at: now, source: "getifaddrs"),
             topProcesses: .checking(unit: "bytes", at: now, source: "libproc"),
+            sensors: .checking(unit: "°C", at: now, source: "SMC"),
             updatedAt: now
         )
     }
 }
 
-/// 비공개 센서(°C·팬·전력) 모듈 자리. v0.1 은 구현 없음 — 스토어 타깃은 이 프로토콜의 구현을 링크하지 않는다.
-public protocol PrivateSensorProvider {
-    func readTemperatureCelsius() -> Reading<Double>
-    func readFanRPM() -> Reading<Double>
-    func readPowerWatts() -> Reading<Double>
+/// 비공개 센서(SMC 온도·팬)를 집계한 값. 센서가 없는 항목은 nil / 빈 배열. 단위는 °C · RPM.
+public struct SensorValues: Equatable, Sendable {
+    public var cpuAverage: Double?
+    public var cpuMax: Double?
+    public var gpuAverage: Double?
+    public var battery: Double?
+    public var fanRPMs: [Double]
+    public init(cpuAverage: Double? = nil, cpuMax: Double? = nil, gpuAverage: Double? = nil, battery: Double? = nil, fanRPMs: [Double] = []) {
+        self.cpuAverage = cpuAverage; self.cpuMax = cpuMax; self.gpuAverage = gpuAverage; self.battery = battery; self.fanRPMs = fanRPMs
+    }
+}
+
+/// 비공개 센서(°C·팬) 모듈 자리. 코어는 이 프로토콜과 값 타입만 안다 — 구현(`NotchIslandSensors`)은 별도 타깃이라
+/// 스토어 타깃은 이 구현을 링크하지 않는다. 수집 큐에서만 호출된다.
+public protocol PrivateSensorProvider: AnyObject {
+    func sample(now: Date) -> Reading<SensorValues>
 }
